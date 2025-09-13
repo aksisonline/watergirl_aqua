@@ -30,20 +30,20 @@ class MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   Future<bool> _checkLoginStatus() async {
     final prefs = await SharedPreferences.getInstance();
-    final email = prefs.getString('email');
-    final password = prefs.getString('password');
+    final uac = prefs.getString('uac');
 
-    if (email != null && password != null) {
+    if (uac != null) {
+      // Verify that the UAC still exists in the database
       final SupabaseClient supabase = Supabase.instance.client;
       final response = await supabase
-          .from('volunteer_login')
+          .from('volunteer_access')
           .select()
-          .eq('email', email)
-          .eq('password', password);
+          .eq('uac', uac)
+          .maybeSingle();
 
-      return true;
+      return response != null;
     }
-    return true;
+    return false;
   }
 
   @override

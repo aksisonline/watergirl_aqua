@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:watergirl_aqua/dashboard/dashboard.dart';
-import 'package:watergirl_aqua/auth/change_password.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginPage extends StatefulWidget {
@@ -13,8 +12,7 @@ class LoginPage extends StatefulWidget {
 
 class LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _accessCodeController = TextEditingController();
   bool _isLoading = false;
 
   Future<void> _signIn(BuildContext context) async {
@@ -25,32 +23,43 @@ class LoginPageState extends State<LoginPage> {
 
       final SupabaseClient supabase = Supabase.instance.client;
 
-      final response = await supabase
-          .from('volunteer_login')
-          .select()
-          .eq('email', _emailController.text)
-          .eq('password', _passwordController.text);
+      try {
+        final response = await supabase
+            .from('volunteer_access')
+            .select('uac, name')
+            .eq('uac', _accessCodeController.text.trim())
+            .maybeSingle();
 
-      setState(() {
-        _isLoading = false;
-      });
+        setState(() {
+          _isLoading = false;
+        });
 
-      if (response.isNotEmpty) {
-        // Save session data
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('email', _emailController.text);
-        await prefs.setString('password', _passwordController.text);
+        if (response != null) {
+          // Save session data
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('uac', _accessCodeController.text.trim());
+          await prefs.setString('volunteer_name', response['name']);
 
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const Dashboard()),
-          );
+          if (mounted) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const Dashboard()),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Invalid Access Code')),
+            );
+          }
         }
-      } else {
+      } catch (e) {
+        setState(() {
+          _isLoading = false;
+        });
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Wrong Credentials')),
+            SnackBar(content: Text('Error: ${e.toString()}')),
           );
         }
       }
@@ -68,14 +77,14 @@ class LoginPageState extends State<LoginPage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Text(
-                'Login',
+                'Volunteer Access',
                 style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold),
               ), const SizedBox(height: 32),
               TextFormField(
-                controller: _emailController,
+                controller: _accessCodeController,
                 decoration: InputDecoration(
                   contentPadding: const EdgeInsets.symmetric(vertical: 15, horizontal: 10),
-                  label: const Text('Email'),
+                  label: const Text('Access Code'),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(6),
                     borderSide: const BorderSide(color: Colors.black, width: 1),
@@ -83,43 +92,16 @@ class LoginPageState extends State<LoginPage> {
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
-                    return 'Please enter your email';
+                    return 'Please enter your access code';
                   }
                   return null;
                 },
-              ), const SizedBox(height: 16),
-              TextFormField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: InputDecoration(
-                  contentPadding: const EdgeInsets.symmetric(vertical: 15, horizontal: 10),
-                  label: const Text('Password'),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(6),
-                    borderSide: const BorderSide(color: Colors.black, width: 1),
-                  ),
-                ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter your password';
-                  }
-                  return null;
-                },
-              ), const SizedBox(height: 8),
-              TextButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const ChangePasswordPage()),
-                  );
-                },
-                child: const Text('Change Password'),
-              ), const SizedBox(height: 8),
+              ), const SizedBox(height: 24),
               _isLoading
               ? const CircularProgressIndicator()
               : ElevatedButton(
                 onPressed: () => _signIn(context),
-                child: const Text('Sign In'),
+                child: const Text('Access Dashboard'),
               ),
 
             ],

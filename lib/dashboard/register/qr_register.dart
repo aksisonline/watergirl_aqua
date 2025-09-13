@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'property_editor.dart';
 
 class QRRegisterPage extends StatefulWidget {
   final Map<String, dynamic> attendee;
@@ -29,7 +30,7 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
       final existingUID = await supabase
           .from('attendee_details')
           .select()
-          .eq('uid', uid)
+          .eq('attendee_internal_uid', uid)
           .maybeSingle();
 
       if (existingUID != null) {
@@ -41,15 +42,19 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
         // Update the UID
         await supabase
             .from('attendee_details')
-            .update({'uid': uid})
-            .eq('email', widget.attendee['email']);
+            .update({'attendee_internal_uid': uid})
+            .eq('attendee_internal_uid', widget.attendee['attendee_internal_uid']);
 
         setState(() {
-          widget.attendee['uid'] = uid;
+          widget.attendee['attendee_internal_uid'] = uid;
         });
+        
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('UID created successfully.')),
+          const SnackBar(content: Text('QR assigned successfully.')),
         );
+
+        // Show option to fill properties
+        _showPropertyDialog();
       }
     } finally {
       if (mounted) {
@@ -58,6 +63,43 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
           isScanning = true; // Resume scanning after updating UID
         });
       }
+    }
+  }
+
+  void _showPropertyDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Fill Properties'),
+        content: const Text('Would you like to fill in the attendee properties now?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Skip'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _navigateToPropertyEditor();
+            },
+            child: const Text('Fill Now'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _navigateToPropertyEditor() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PropertyEditorPage(attendee: widget.attendee),
+      ),
+    );
+    
+    if (result == true) {
+      // Properties were saved, we can navigate back or refresh
+      Navigator.pop(context);
     }
   }
 
@@ -148,19 +190,28 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Name: ${widget.attendee['name']}', style: const TextStyle(fontSize: 18)),
+                        Text('Name: ${widget.attendee['attendee_name'] ?? 'Unknown'}', style: const TextStyle(fontSize: 18)),
                         const SizedBox(height: 8.0),
-                        Text('Email: ${widget.attendee['email']}', style: const TextStyle(fontSize: 18)),
+                        Text('ID: ${widget.attendee['attendee_internal_uid'] ?? 'No ID'}', style: const TextStyle(fontSize: 18)),
                       ],
                     ),
                   ),
                   if (_isLoading) const CircularProgressIndicator(),
                   if (!_isLoading)
-                    ElevatedButton(
-                      onPressed: scannedData == 'No data scanned yet' ? null : () {
-                        updateUID(scannedData);
-                      },
-                      child: const Text('Update UID'),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        ElevatedButton(
+                          onPressed: scannedData == 'No data scanned yet' ? null : () {
+                            updateUID(scannedData);
+                          },
+                          child: const Text('Assign QR'),
+                        ),
+                        ElevatedButton(
+                          onPressed: () => _navigateToPropertyEditor(),
+                          child: const Text('Edit Properties'),
+                        ),
+                      ],
                     ),
                 ],
               ),

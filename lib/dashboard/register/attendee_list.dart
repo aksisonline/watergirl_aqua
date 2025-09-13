@@ -20,7 +20,7 @@ class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
     setState(() {
       _isLoading = true;
     });
-    final data = await supabase.from('attendee_details').select();
+    final data = await supabase.from('attendee_details').select('attendee_internal_uid, attendee_name, attendee_properties, attendee_attendance');
 
     if (!mounted) return; // Check if the widget is still mounted
 
@@ -47,25 +47,24 @@ class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
   void _filterAttendees(String query) {
     setState(() {
       attendees = _originalAttendees.where((attendee) {
-        final name = attendee['name'].toLowerCase();
-        final email = attendee['email'].toLowerCase();
+        final name = attendee['attendee_name']?.toLowerCase() ?? '';
         final searchQuery = query.toLowerCase();
-        return name.contains(searchQuery) || email.contains(searchQuery);
+        return name.contains(searchQuery);
       }).toList();
       _sortAttendees();
     });
   }
 
   void _sortAttendees() {
-    attendees.sort((a, b) => a['name'].compareTo(b['name']));
+    attendees.sort((a, b) => (a['attendee_name'] ?? '').compareTo(b['attendee_name'] ?? ''));
   }
 
   Future<void> _updateAttendeeUID(Map<String, dynamic> attendee) async {
     final index = attendees.indexOf(attendee);
     if (index != -1) {
-      final response = await supabase.from('attendee_details').select('uid').eq('email', attendees[index]['email']).single();
+      final response = await supabase.from('attendee_details').select('attendee_internal_uid').eq('attendee_internal_uid', attendees[index]['attendee_internal_uid']).single();
       setState(() {
-        attendees[index]['uid'] = response['uid']; // Update the UID here
+        attendees[index]['attendee_internal_uid'] = response['attendee_internal_uid']; // Update the UID here
         _sortAttendees();
       });
     }
@@ -80,7 +79,7 @@ class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
           child: TextField(
             controller: _searchController,
             decoration: const InputDecoration(
-              labelText: 'Search by name or email',
+              labelText: 'Search by name',
               border: OutlineInputBorder(),
             ),
             onChanged: _filterAttendees,
@@ -93,10 +92,17 @@ class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
             itemCount: attendees.length,
             itemBuilder: (context, index) {
               final attendee = attendees[index];
-              final uidExists = attendee['uid'] != null;
+              final uidExists = attendee['attendee_internal_uid'] != null;
               return ListTile(
-                title: Text(attendee['name']),
-                subtitle: Text(attendee['email']),
+                title: Text(attendee['attendee_name'] ?? 'Unknown Name'),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('ID: ${attendee['attendee_internal_uid'] ?? 'No ID'}'),
+                    if (attendee['attendee_properties'] != null) 
+                      Text('Properties: ${attendee['attendee_properties']}'),
+                  ],
+                ),
                 trailing: ElevatedButton(
                   onPressed: uidExists
                       ? null
@@ -112,7 +118,7 @@ class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: uidExists ? Colors.grey : Colors.blue,
                   ),
-                  child: Text(uidExists ? 'UID Exists' : 'Create UID'),
+                  child: Text(uidExists ? 'QR Assigned' : 'Assign QR'),
                 ),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
               );

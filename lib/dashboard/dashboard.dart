@@ -7,6 +7,7 @@ import 'package:watergirl_aqua/dimensions.dart';
 import '/auth/login_signup.dart';
 import 'search/search.dart';
 import 'package:watergirl_aqua/dashboard/qr/qr.dart';
+import 'register/qr_search.dart';
 
 class Dashboard extends StatefulWidget {
   final int initialIndex;
@@ -32,6 +33,7 @@ class _DashboardState extends State<Dashboard> {
       const AttendeeListNoUIDPage(),
       const SearchPage(),
       QRScannerPage(key: qrScannerKey), // Use the GlobalKey here
+      const QRSearchPage(), // Add QR Search page
     ];
   }
 
@@ -52,7 +54,7 @@ class _DashboardState extends State<Dashboard> {
   void _reloadCurrentPage() async {
     if (!mounted) return; // Check if the widget is still mounted
 
-    if (_selectedIndex < 2) {
+    if (_selectedIndex < 3) {
       Navigator.pushReplacement(
         context,
         PageRouteBuilder(
@@ -72,8 +74,8 @@ class _DashboardState extends State<Dashboard> {
 
   Future<void> _signOut(BuildContext context) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('email');
-    await prefs.remove('password');
+    await prefs.remove('uac');
+    await prefs.remove('volunteer_name');
 
     Navigator.pushReplacement(
       context,
@@ -131,10 +133,12 @@ class _DashboardState extends State<Dashboard> {
               onTap: _onItemTapped,
               showSelectedLabels: false,
               showUnselectedLabels: false,
+              type: BottomNavigationBarType.fixed, // Add this to show all 4 tabs
               items: const [
                 BottomNavigationBarItem(icon: Icon(Icons.qr_code), label: 'QR'),
                 BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
-                BottomNavigationBarItem(icon: Icon(Icons.document_scanner_outlined), label: 'QR'),
+                BottomNavigationBarItem(icon: Icon(Icons.document_scanner_outlined), label: 'QR Scanner'),
+                BottomNavigationBarItem(icon: Icon(Icons.qr_code_scanner), label: 'QR Search'),
               ],
             ),
           ),
