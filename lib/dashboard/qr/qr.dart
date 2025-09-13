@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
 import '../register/attendee_profile.dart';
 import '../register/property_editor.dart';
+import '../../services/data_service.dart';
 
 class QRScannerPage extends StatefulWidget {
   const QRScannerPage({super.key});
@@ -20,6 +21,7 @@ class QRScannerPage extends StatefulWidget {
 
 class QRScannerPageState extends State<QRScannerPage> {
   final SupabaseClient supabase = Supabase.instance.client;
+  final DataService _dataService = DataService();
 
   Map<String, dynamic>? attendeeData = {};
   late MobileScannerController controller;
@@ -30,21 +32,57 @@ class QRScannerPageState extends State<QRScannerPage> {
   Map<String, dynamic>? currentSlot;
   bool isSlotActive = false;
   String qrMode = 'attendance'; // 'attendance' or 'profile' mode
+  bool _isOnline = true;
+  int _queuedChanges = 0;
 
   Future<void> searchDatabase(String scannedData) async {
-    final data = await supabase
-        .from('attendee_details')
-        .select()
-        .eq('attendee_internal_uid', scannedData)
-        .maybeSingle();
+    // Search in cached data first
+    final cachedAttendees = _dataService.attendees;
+    final data = cachedAttendees.firstWhere(
+      (a) => a['attendee_internal_uid'] == scannedData,
+      orElse: () => {},
+    );
 
-    setState(() {
-      attendeeData = data;
-      if (data != null) {
-        // Check current attendance for the active slot
-        _checkCurrentAttendance();
+    if (data.isNotEmpty) {
+      setState(() {
+        attendeeData = data;
+        if (data.isNotEmpty) {
+          // Check current attendance for the active slot
+          _checkCurrentAttendance();
+        }
+      });
+    } else if (_isOnline) {
+      // Try server search if online and not in cache
+      try {
+        final serverData = await supabase
+            .from('attendee_details')
+            .select()
+            .eq('attendee_internal_uid', scannedData)
+            .maybeSingle();
+
+        setState(() {
+          attendeeData = serverData;
+          if (serverData != null) {
+            // Check current attendance for the active slot
+            _checkCurrentAttendance();
+          }
+        });
+      } catch (e) {
+        print('Error searching server: $e');
+        setState(() {
+          attendeeData = {};
+        });
       }
-    });
+    } else {
+      setState(() {
+        attendeeData = {};
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Attendee not found in offline cache')),
+        );
+      }
+    }
   }
 
   void _checkCurrentAttendance() {
@@ -78,43 +116,35 @@ class QRScannerPageState extends State<QRScannerPage> {
     if (!mounted || currentSlot == null) return;
 
     try {
-      // Get current attendance data
-      final currentData = await supabase
-          .from('attendee_details')
-          .select('attendee_attendance')
-          .eq('attendee_internal_uid', uid)
-          .single();
-
-      List<dynamic> attendance = [];
-      if (currentData['attendee_attendance'] != null) {
-        attendance = json.decode(currentData['attendee_attendance']);
-      }
-
-      // Update or add attendance for current slot
-      final currentSlotId = currentSlot!['slot_id'].toString();
-      final existingIndex = attendance.indexWhere(
-        (a) => a['slot_id'].toString() == currentSlotId,
+      // Use DataService for optimistic updates and offline queueing
+      await _dataService.updateAttendance(
+        attendeeId: uid,
+        slotId: currentSlot!['slot_id'].toString(),
+        isPresent: newValue,
       );
-
-      if (existingIndex >= 0) {
-        attendance[existingIndex]['attendance_bool'] = newValue;
-      } else {
-        attendance.add({
-          'slot_id': currentSlotId,
-          'attendance_bool': newValue,
-        });
-      }
-
-      // Update in database
-      await supabase
-          .from('attendee_details')
-          .update({'attendee_attendance': json.encode(attendance)})
-          .eq('attendee_internal_uid', uid);
-
+      
+      // Update queued changes count
+      _updateQueuedChangesCount();
+      
+      // Update local state
       if (mounted && attendeeData != null) {
         setState(() {
-          attendeeData!['attendee_attendance'] = json.encode(attendance);
+          isPresent = newValue;
         });
+      }
+      
+      // Show feedback based on connection status
+      final message = _isOnline 
+          ? 'Attendance updated successfully'
+          : 'Attendance queued for sync when online';
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: _isOnline ? Colors.green : Colors.orange,
+          ),
+        );
       }
     } catch (e) {
       print('Error updating attendance: $e');
@@ -149,35 +179,68 @@ class QRScannerPageState extends State<QRScannerPage> {
     if (!kIsWeb) {
       controller = MobileScannerController();
     }
-    _loadCurrentSlot();
+    _initializeDataService();
   }
 
-  Future<void> _loadCurrentSlot() async {
+  Future<void> _initializeDataService() async {
     try {
-      final now = DateTime.now();
-      final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+      await _dataService.initialize();
       
-      final slots = await supabase.from('slots').select('*');
-      
-      for (final slot in slots) {
-        final timeFrame = slot['slot_time_frame'] as String;
-        if (_isTimeInRange(currentTime, timeFrame)) {
+      // Listen to connection status
+      _dataService.connectionStatusStream.listen((isOnline) {
+        if (mounted) {
           setState(() {
-            currentSlot = slot;
-            isSlotActive = true;
-            qrMode = 'attendance'; // Switch to attendance mode when slot is active
+            _isOnline = isOnline;
           });
-          return;
+          _updateQueuedChangesCount();
         }
-      }
-      
-      setState(() {
-        currentSlot = null;
-        isSlotActive = false;
-        qrMode = 'profile'; // Switch to profile mode when no active slot
       });
+      
+      // Listen to slots changes
+      _dataService.slotsStream.listen((slots) {
+        if (mounted) {
+          _updateCurrentSlotFromSlots(slots);
+        }
+      });
+      
+      // Initialize current slot
+      _updateCurrentSlotFromSlots(_dataService.slots);
+      _updateQueuedChangesCount();
+      
     } catch (e) {
-      print('Error loading current slot: $e');
+      print('Error initializing data service: $e');
+    }
+  }
+
+  void _updateCurrentSlotFromSlots(List<Map<String, dynamic>> slots) {
+    final now = DateTime.now();
+    final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    
+    Map<String, dynamic>? newCurrentSlot;
+    bool newIsSlotActive = false;
+    
+    for (final slot in slots) {
+      final timeFrame = slot['slot_time_frame'] as String;
+      if (_isTimeInRange(currentTime, timeFrame)) {
+        newCurrentSlot = slot;
+        newIsSlotActive = true;
+        break;
+      }
+    }
+    
+    setState(() {
+      currentSlot = newCurrentSlot;
+      isSlotActive = newIsSlotActive;
+      qrMode = newIsSlotActive ? 'attendance' : 'profile';
+    });
+  }
+
+  Future<void> _updateQueuedChangesCount() async {
+    final count = await _dataService.getQueuedChangesCount();
+    if (mounted) {
+      setState(() {
+        _queuedChanges = count;
+      });
     }
   }
 
@@ -232,6 +295,44 @@ class QRScannerPageState extends State<QRScannerPage> {
       padding: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
       child: Column(
         children: [
+          // Connection Status and Sync Info
+          if (!_isOnline || _queuedChanges > 0)
+            Card(
+              color: _isOnline ? Colors.orange[100] : Colors.red[100],
+              margin: EdgeInsets.only(bottom: isLargeScreen ? 16.0 : 8.0),
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      _isOnline ? Icons.sync : Icons.cloud_off,
+                      color: _isOnline ? Colors.orange : Colors.red,
+                      size: isLargeScreen ? 24 : 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _isOnline ? 'Syncing...' : 'Offline',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: isLargeScreen ? 14 : 12,
+                            ),
+                          ),
+                          if (_queuedChanges > 0)
+                            Text(
+                              '$_queuedChanges changes queued',
+                              style: TextStyle(fontSize: isLargeScreen ? 10 : 8),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           // Mode Toggle for large screens
           if (isLargeScreen)
             Card(

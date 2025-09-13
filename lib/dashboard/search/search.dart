@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:convert';
 import 'dart:io' show Platform;
 import '../register/attendee_profile.dart';
+import '../../services/data_service.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -16,6 +17,8 @@ class SearchPage extends StatefulWidget {
 class _SearchPageState extends State<SearchPage> {
   final SupabaseClient supabase = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
+  final DataService _dataService = DataService();
+  
   List<Map<String, dynamic>> attendeeData = [];
   List<Map<String, dynamic>> _originalData = [];
   List<Map<String, dynamic>> availableProperties = [];
@@ -28,13 +31,101 @@ class _SearchPageState extends State<SearchPage> {
   MobileScannerController? _qrController;
   Map<String, String> _activeFilters = {}; // Property filters
   bool _showSuggestions = false;
+  bool _isOnline = true;
+  int _queuedChanges = 0;
 
   @override
   void initState() {
     super.initState();
-    fetchAttendees();
-    _loadCurrentSlot();
-    _loadAvailableProperties();
+    _initializeDataService();
+  }
+
+  Future<void> _initializeDataService() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      await _dataService.initialize();
+      
+      // Listen to data streams
+      _dataService.attendeesStream.listen((attendees) {
+        if (mounted) {
+          setState(() {
+            _originalData = attendees;
+            _extractPropertyValues();
+            _filterData(_searchController.text);
+            _isLoading = false;
+          });
+        }
+      });
+      
+      _dataService.connectionStatusStream.listen((isOnline) {
+        if (mounted) {
+          setState(() {
+            _isOnline = isOnline;
+          });
+          _updateQueuedChangesCount();
+        }
+      });
+      
+      _dataService.propertiesStream.listen((properties) {
+        if (mounted) {
+          setState(() {
+            availableProperties = properties;
+          });
+        }
+      });
+      
+      _dataService.slotsStream.listen((slots) {
+        if (mounted) {
+          _updateCurrentSlotFromSlots(slots);
+        }
+      });
+      
+      // Initialize current slot
+      _updateCurrentSlotFromSlots(_dataService.slots);
+      _updateQueuedChangesCount();
+      
+    } catch (e) {
+      print('Error initializing data service: $e');
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  void _updateCurrentSlotFromSlots(List<Map<String, dynamic>> slots) {
+    final now = DateTime.now();
+    final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    
+    Map<String, dynamic>? newCurrentSlot;
+    bool newIsSlotActive = false;
+    
+    for (final slot in slots) {
+      final timeFrame = slot['slot_time_frame'] as String;
+      if (_isTimeInRange(currentTime, timeFrame)) {
+        newCurrentSlot = slot;
+        newIsSlotActive = true;
+        break;
+      }
+    }
+    
+    setState(() {
+      currentSlot = newCurrentSlot;
+      isSlotActive = newIsSlotActive;
+    });
+  }
+
+  Future<void> _updateQueuedChangesCount() async {
+    final count = await _dataService.getQueuedChangesCount();
+    if (mounted) {
+      setState(() {
+        _queuedChanges = count;
+      });
+    }
   }
 
   @override
@@ -44,70 +135,8 @@ class _SearchPageState extends State<SearchPage> {
     super.dispose();
   }
 
-  Future<void> fetchAttendees() async {
-    setState(() {
-      _isLoading = true;
-    });
-    final data = await supabase
-        .from('attendee_details')
-        .select('*');
-
-    if (!mounted) return;
-
-    setState(() {
-      _originalData = List<Map<String, dynamic>>.from(data);
-      attendeeData = List<Map<String, dynamic>>.from(_originalData);
-      _extractPropertyValues(); // Extract unique property values
-      _sortAttendees();
-      _isLoading = false;
-    });
-  }
-
   void _extractPropertyValues() {
-    propertyValues.clear();
-    
-    for (final attendee in _originalData) {
-      if (attendee['attendee_properties'] != null) {
-        try {
-          final properties = json.decode(attendee['attendee_properties']) as Map<String, dynamic>;
-          properties.forEach((key, value) {
-            if (!propertyValues.containsKey(key)) {
-              propertyValues[key] = <String>{};
-            }
-            propertyValues[key]!.add(value.toString());
-          });
-        } catch (e) {
-          // Ignore parsing errors
-        }
-      }
-    }
-  }
-
-  Future<void> _loadCurrentSlot() async {
-    try {
-      final now = DateTime.now();
-      final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-      
-      final slots = await supabase.from('slots').select('*');
-      
-      for (final slot in slots) {
-        final timeFrame = slot['slot_time_frame'] as String;
-        if (_isTimeInRange(currentTime, timeFrame)) {
-          setState(() {
-            currentSlot = slot;
-            isSlotActive = true;
-          });
-          return;
-        }
-      }
-      
-      setState(() {
-        currentSlot = null;
-        isSlotActive = false;
-      });
-    } catch (e) {
-      print('Error loading current slot: $e');
-    }
+    propertyValues = _dataService.getPropertyValues();
   }
 
   bool _isTimeInRange(String currentTime, String timeFrame) {
@@ -133,58 +162,10 @@ class _SearchPageState extends State<SearchPage> {
     return int.parse(parts[0]) * 60 + int.parse(parts[1]);
   }
 
-  Future<void> _loadAvailableProperties() async {
-    try {
-      final data = await supabase.from('properties').select('*');
-      setState(() {
-        availableProperties = List<Map<String, dynamic>>.from(data);
-      });
-    } catch (e) {
-      print('Error loading properties: $e');
-    }
-  }
-
   void _filterData(String query) {
     setState(() {
       _updateSearchSuggestions(query);
-      
-      attendeeData = _originalData.where((item) {
-        final name = item['attendee_name']?.toLowerCase() ?? '';
-        final searchQuery = query.toLowerCase();
-        
-        // Search by name
-        bool matchesName = name.contains(searchQuery);
-        
-        // Search by properties
-        bool matchesProperties = false;
-        if (item['attendee_properties'] != null) {
-          try {
-            final properties = json.decode(item['attendee_properties']) as Map<String, dynamic>;
-            matchesProperties = properties.values.any((value) => 
-              value.toString().toLowerCase().contains(searchQuery));
-          } catch (e) {
-            // Ignore parsing errors
-          }
-        }
-        
-        // Apply active filters
-        bool matchesFilters = true;
-        if (_activeFilters.isNotEmpty && item['attendee_properties'] != null) {
-          try {
-            final properties = json.decode(item['attendee_properties']) as Map<String, dynamic>;
-            for (final filter in _activeFilters.entries) {
-              if (properties[filter.key]?.toString() != filter.value) {
-                matchesFilters = false;
-                break;
-              }
-            }
-          } catch (e) {
-            matchesFilters = false;
-          }
-        }
-        
-        return (query.isEmpty || matchesName || matchesProperties) && matchesFilters;
-      }).toList();
+      attendeeData = _dataService.searchAttendees(query, _activeFilters);
       _sortAttendees();
     });
   }
@@ -313,28 +294,49 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Future<void> _searchByQR(String uid) async {
-    try {
-      final data = await supabase
-          .from('attendee_details')
-          .select('*')
-          .eq('attendee_internal_uid', uid)
-          .maybeSingle();
+    // Search in cached data first
+    final cachedAttendees = _dataService.attendees;
+    final attendee = cachedAttendees.firstWhere(
+      (a) => a['attendee_internal_uid'] == uid,
+      orElse: () => {},
+    );
 
-      if (data != null) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => AttendeeProfilePage(attendee: data),
-          ),
-        );
-      } else {
+    if (attendee.isNotEmpty) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AttendeeProfilePage(attendee: attendee),
+        ),
+      );
+    } else if (_isOnline) {
+      // Try server search if online and not in cache
+      try {
+        final data = await supabase
+            .from('attendee_details')
+            .select('*')
+            .eq('attendee_internal_uid', uid)
+            .maybeSingle();
+
+        if (data != null) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AttendeeProfilePage(attendee: data),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No attendee found with this QR code')),
+          );
+        }
+      } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No attendee found with this QR code')),
+          SnackBar(content: Text('Error searching: $e')),
         );
       }
-    } catch (e) {
+    } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error searching: $e')),
+        const SnackBar(content: Text('Attendee not found in offline cache')),
       );
     }
   }
@@ -382,44 +384,29 @@ class _SearchPageState extends State<SearchPage> {
     if (currentSlot == null) return;
 
     try {
-      // Get current attendance data
-      final currentData = await supabase
-          .from('attendee_details')
-          .select('attendee_attendance')
-          .eq('attendee_internal_uid', attendeeId)
-          .single();
-
-      List<dynamic> attendance = [];
-      if (currentData['attendee_attendance'] != null) {
-        attendance = json.decode(currentData['attendee_attendance']);
-      }
-
-      // Update or add attendance for current slot
-      final currentSlotId = currentSlot!['slot_id'].toString();
-      final existingIndex = attendance.indexWhere(
-        (a) => a['slot_id'].toString() == currentSlotId,
+      // Use DataService for optimistic updates and offline queueing
+      await _dataService.updateAttendance(
+        attendeeId: attendeeId,
+        slotId: currentSlot!['slot_id'].toString(),
+        isPresent: newValue,
       );
-
-      if (existingIndex >= 0) {
-        attendance[existingIndex]['attendance_bool'] = newValue;
-      } else {
-        attendance.add({
-          'slot_id': currentSlotId,
-          'attendance_bool': newValue,
-        });
-      }
-
-      // Update in database
-      await supabase
-          .from('attendee_details')
-          .update({'attendee_attendance': json.encode(attendance)})
-          .eq('attendee_internal_uid', attendeeId);
-
+      
+      // Update queued changes count
+      _updateQueuedChangesCount();
+      
       if (!mounted) return;
 
-      setState(() {
-        attendeeData[index]['attendee_attendance'] = json.encode(attendance);
-      });
+      // Show feedback based on connection status
+      final message = _isOnline 
+          ? 'Attendance updated successfully'
+          : 'Attendance queued for sync when online';
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: _isOnline ? Colors.green : Colors.orange,
+        ),
+      );
     } catch (e) {
       print('Error updating attendance: $e');
       if (mounted) {
@@ -458,6 +445,58 @@ class _SearchPageState extends State<SearchPage> {
     
     return Column(
       children: [
+        // Connection Status and Sync Info
+        if (!_isOnline || _queuedChanges > 0)
+          Card(
+            color: _isOnline ? Colors.orange[100] : Colors.red[100],
+            margin: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
+            child: Padding(
+              padding: EdgeInsets.all(isLargeScreen ? 16.0 : 8.0),
+              child: Row(
+                children: [
+                  Icon(
+                    _isOnline ? Icons.sync : Icons.cloud_off,
+                    color: _isOnline ? Colors.orange : Colors.red,
+                    size: isLargeScreen ? 28 : 24,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _isOnline ? 'Syncing data...' : 'Offline Mode',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: isLargeScreen ? 16 : 14,
+                          ),
+                        ),
+                        if (_queuedChanges > 0)
+                          Text(
+                            '$_queuedChanges changes queued for sync',
+                            style: TextStyle(fontSize: isLargeScreen ? 12 : 10),
+                          ),
+                        if (!_isOnline)
+                          Text(
+                            'Data cached locally, changes will sync when online',
+                            style: TextStyle(fontSize: isLargeScreen ? 12 : 10),
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (_isOnline && _queuedChanges > 0)
+                    IconButton(
+                      icon: const Icon(Icons.sync),
+                      onPressed: () async {
+                        await _dataService.refreshData();
+                        _updateQueuedChangesCount();
+                      },
+                      tooltip: 'Force sync now',
+                    ),
+                ],
+              ),
+            ),
+          ),
         // Slot Information
         if (currentSlot != null)
           Card(

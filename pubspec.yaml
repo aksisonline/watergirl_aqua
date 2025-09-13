@@ -39,6 +39,8 @@ dependencies:
   flutter_launcher_icons: ^0.14.4
   flutter_dotenv: ^6.0.0
   supabase_flutter: ^2.10.0
+  connectivity_plus: ^6.2.0
+  sqflite: ^2.3.0
 
 dev_dependencies:
   flutter_test:

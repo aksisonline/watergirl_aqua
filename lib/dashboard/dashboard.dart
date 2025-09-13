@@ -9,6 +9,7 @@ import 'package:watergirl_aqua/dimensions.dart';
 import '/auth/login_signup.dart';
 import 'search/search.dart';
 import 'package:watergirl_aqua/dashboard/qr/qr.dart';
+import '../services/data_service.dart';
 
 class Dashboard extends StatefulWidget {
   final int initialIndex;
@@ -23,6 +24,7 @@ class _DashboardState extends State<Dashboard> {
   late int _selectedIndex;
   String _appBarTitle = 'Home';
   final GlobalKey<QRScannerPageState> qrScannerKey = GlobalKey<QRScannerPageState>();
+  final DataService _dataService = DataService();
   late List<Widget> _widgetOptions;
   
   // Define page titles
@@ -63,36 +65,25 @@ class _DashboardState extends State<Dashboard> {
   }
 
   void _updateQRScannerTitle() async {
-    // Check if there's an active slot for attendance marking
-    final supabase = Supabase.instance.client;
-    try {
+    // Use DataService instead of direct Supabase calls
+    final currentSlot = _dataService.currentSlot;
+    
+    if (currentSlot != null) {
       final now = DateTime.now();
       final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+      final timeFrame = currentSlot['slot_time_frame'] as String;
       
-      final slots = await supabase.from('slots').select('*');
-      bool hasActiveSlot = false;
-      
-      for (final slot in slots) {
-        final timeFrame = slot['slot_time_frame'] as String;
-        if (_isTimeInRange(currentTime, timeFrame)) {
-          hasActiveSlot = true;
-          setState(() {
-            _appBarTitle = 'Attendance - ${slot['slot_name']}';
-          });
-          return;
-        }
-      }
-      
-      if (!hasActiveSlot) {
+      if (_isTimeInRange(currentTime, timeFrame)) {
         setState(() {
-          _appBarTitle = 'QR Scanner - Profile View';
+          _appBarTitle = 'Attendance - ${currentSlot['slot_name']}';
         });
+        return;
       }
-    } catch (e) {
-      setState(() {
-        _appBarTitle = 'QR Scanner';
-      });
     }
+    
+    setState(() {
+      _appBarTitle = 'QR Scanner - Profile View';
+    });
   }
 
   bool _isTimeInRange(String currentTime, String timeFrame) {
@@ -127,25 +118,30 @@ class _DashboardState extends State<Dashboard> {
   void _reloadCurrentPage() async {
     if (!mounted) return; // Check if the widget is still mounted
 
-    if (_selectedIndex < 2) {
-      Navigator.pushReplacement(
-        context,
-        PageRouteBuilder(
-          pageBuilder: (context, animation1, animation2) => Dashboard(initialIndex: _selectedIndex),
-          transitionDuration: Duration.zero,
-          reverseTransitionDuration: Duration.zero,
-        ),
-      );
-    } else {
-      // Handle refresh for QRPage if needed
-      final qrPageState = qrScannerKey.currentState;
-      if (qrPageState != null && qrPageState.mounted) {
-        qrPageState.refreshCamera();
+    // Use DataService for efficient refresh instead of full page reload
+    try {
+      await _dataService.refreshData();
+      
+      // Update title for QR scanner page
+      if (_selectedIndex == 2) {
+        _updateAppBarTitle();
+      }
+      
+      // Refresh QR camera if needed
+      if (_selectedIndex == 2) {
+        final qrPageState = qrScannerKey.currentState;
+        if (qrPageState != null && qrPageState.mounted) {
+          qrPageState.refreshCamera();
+        }
+      }
+    } catch (e) {
+      print('Error refreshing data: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error refreshing: $e')),
+        );
       }
     }
-    
-    // Update title after reload
-    _updateAppBarTitle();
   }
 
   Future<void> _signOut(BuildContext context) async {
