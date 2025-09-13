@@ -1,9 +1,11 @@
 import 'package:watergirl_aqua/dimensions.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
 import '../register/attendee_profile.dart';
+import '../register/property_editor.dart';
 
 class QRScannerPage extends StatefulWidget {
   const QRScannerPage({super.key});
@@ -27,6 +29,7 @@ class QRScannerPageState extends State<QRScannerPage> {
   bool isScanning = true; // Add isScanning flag
   Map<String, dynamic>? currentSlot;
   bool isSlotActive = false;
+  String qrMode = 'attendance'; // 'attendance' or 'profile' mode
 
   Future<void> searchDatabase(String scannedData) async {
     final data = await supabase
@@ -129,8 +132,12 @@ class QRScannerPageState extends State<QRScannerPage> {
       attendeeData = {};
       scannedData = 'No data scanned yet';
     });
-    controller.stop();
-    controller.start();
+    
+    if (!kIsWeb) {
+      controller.stop();
+      controller.start();
+    }
+    
     setState(() {
       isScanning = true;
     });
@@ -139,7 +146,9 @@ class QRScannerPageState extends State<QRScannerPage> {
   @override
   void initState() {
     super.initState();
-    controller = MobileScannerController();
+    if (!kIsWeb) {
+      controller = MobileScannerController();
+    }
     _loadCurrentSlot();
   }
 
@@ -156,6 +165,7 @@ class QRScannerPageState extends State<QRScannerPage> {
           setState(() {
             currentSlot = slot;
             isSlotActive = true;
+            qrMode = 'attendance'; // Switch to attendance mode when slot is active
           });
           return;
         }
@@ -164,6 +174,7 @@ class QRScannerPageState extends State<QRScannerPage> {
       setState(() {
         currentSlot = null;
         isSlotActive = false;
+        qrMode = 'profile'; // Switch to profile mode when no active slot
       });
     } catch (e) {
       print('Error loading current slot: $e');
@@ -195,36 +206,76 @@ class QRScannerPageState extends State<QRScannerPage> {
 
   @override
   void dispose() {
-    controller.dispose();
+    if (!kIsWeb) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
   void toggleTorch() {
-    setState(() {
-      torchOn = !torchOn;
-    });
-    controller.toggleTorch();
+    if (!kIsWeb) {
+      setState(() {
+        torchOn = !torchOn;
+      });
+      controller.toggleTorch();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final uid = attendeeData?['attendee_internal_uid'];
+    final screenSize = MediaQuery.of(context).size;
+    final isLargeScreen = screenSize.width > 600;
+    final isWebOrDesktop = kIsWeb;
 
     return Padding(
-      padding: const EdgeInsets.all(16.0),
+      padding: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
       child: Column(
         children: [
+          // Mode Toggle for large screens
+          if (isLargeScreen)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Mode: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ToggleButtons(
+                      isSelected: [qrMode == 'attendance', qrMode == 'profile'],
+                      onPressed: (index) {
+                        setState(() {
+                          qrMode = index == 0 ? 'attendance' : 'profile';
+                        });
+                      },
+                      children: const [
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text('Attendance'),
+                        ),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text('Profile'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          
           // Slot Information
-          if (currentSlot != null)
+          if (currentSlot != null && qrMode == 'attendance')
             Card(
               color: isSlotActive ? Colors.green[100] : Colors.orange[100],
               child: Padding(
-                padding: const EdgeInsets.all(8.0),
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
                 child: Row(
                   children: [
                     Icon(
                       isSlotActive ? Icons.access_time : Icons.schedule,
                       color: isSlotActive ? Colors.green : Colors.orange,
+                      size: isLargeScreen ? 28 : 24,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -233,11 +284,14 @@ class QRScannerPageState extends State<QRScannerPage> {
                         children: [
                           Text(
                             currentSlot!['slot_name'] ?? 'Unknown Slot',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: isLargeScreen ? 18 : 16,
+                            ),
                           ),
                           Text(
                             'Time: ${currentSlot!['slot_time_frame']}',
-                            style: const TextStyle(fontSize: 12),
+                            style: TextStyle(fontSize: isLargeScreen ? 14 : 12),
                           ),
                         ],
                       ),
@@ -247,6 +301,32 @@ class QRScannerPageState extends State<QRScannerPage> {
                       style: TextStyle(
                         color: isSlotActive ? Colors.green : Colors.orange,
                         fontWeight: FontWeight.bold,
+                        fontSize: isLargeScreen ? 16 : 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else if (qrMode == 'profile')
+            Card(
+              color: Colors.blue[100],
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.person_search,
+                      color: Colors.blue,
+                      size: isLargeScreen ? 28 : 24,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Profile View Mode - Scan QR to view attendee details',
+                      style: TextStyle(
+                        color: Colors.blue[800],
+                        fontWeight: FontWeight.w500,
+                        fontSize: isLargeScreen ? 16 : 14,
                       ),
                     ),
                   ],
@@ -256,93 +336,146 @@ class QRScannerPageState extends State<QRScannerPage> {
           else
             Card(
               color: Colors.grey[100],
-              child: const Padding(
-                padding: EdgeInsets.all(8.0),
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
                 child: Row(
                   children: [
-                    Icon(Icons.schedule_outlined, color: Colors.grey),
-                    SizedBox(width: 8),
-                    Text('No active slot', style: TextStyle(color: Colors.grey)),
+                    Icon(
+                      Icons.schedule_outlined,
+                      color: Colors.grey,
+                      size: isLargeScreen ? 28 : 24,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'No active slot - Profile mode enabled',
+                      style: TextStyle(
+                        color: Colors.grey,
+                        fontSize: isLargeScreen ? 16 : 14,
+                      ),
+                    ),
                   ],
                 ),
               ),
             ),
           
-          const SizedBox(height: 16),
+          SizedBox(height: isLargeScreen ? 24 : 16),
           
+          // QR Scanner with responsive sizing
           Container(
-            height: 300,
+            height: isLargeScreen ? 400 : 300,
+            width: isLargeScreen ? 400 : double.infinity,
             clipBehavior: Clip.hardEdge,
             decoration: const BoxDecoration(
               borderRadius: BorderRadius.all(Radius.circular(8.0))
             ),
-            child: MobileScanner(
-              controller: controller,
-              fit: BoxFit.cover,
-              onDetect: (capture) {
-                if (isScanning) {
-                  final List<Barcode> barcodes = capture.barcodes;
-                  for (final barcode in barcodes) {
-                    setState(() {
-                      scannedData = barcode.rawValue ?? 'Unknown data';
-                      isScanning = false;
-                    });
-                    searchDatabase(scannedData);
-                  }
-                }
-              },
+            child: isWebOrDesktop 
+                ? Container(
+                    color: Colors.grey[300],
+                    child: const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.qr_code_scanner, size: 64, color: Colors.grey),
+                          SizedBox(height: 16),
+                          Text(
+                            'QR Scanner not available on web/desktop',
+                            style: TextStyle(color: Colors.grey, fontSize: 16),
+                            textAlign: TextAlign.center,
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'Please use mobile device for QR scanning',
+                            style: TextStyle(color: Colors.grey, fontSize: 14),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : MobileScanner(
+                    controller: controller,
+                    fit: BoxFit.cover,
+                    onDetect: (capture) {
+                      if (isScanning) {
+                        final List<Barcode> barcodes = capture.barcodes;
+                        for (final barcode in barcodes) {
+                          setState(() {
+                            scannedData = barcode.rawValue ?? 'Unknown data';
+                            isScanning = false;
+                          });
+                          searchDatabase(scannedData);
+                        }
+                      }
+                    },
+                  ),
+          ),
+          
+          if (!isWebOrDesktop) // Only show camera controls on mobile
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: Icon(torchOn ? Icons.flash_on : Icons.flash_off),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: toggleTorch,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.cameraswitch),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: () {
+                    if (!kIsWeb) controller.switchCamera();
+                  },
+                ),
+              ],
             ),
-          ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              IconButton(
-                icon: Icon(torchOn ? Icons.flash_on : Icons.flash_off),
-                onPressed: toggleTorch,
-              ),
-              IconButton(
-                icon: const Icon(Icons.cameraswitch),
-                onPressed: () => controller.switchCamera(),
-              ),
-            ],
-          ),
+          
           Container(
             width: deviceWidth,
-            padding: EdgeInsets.all(safePadding),
+            padding: EdgeInsets.all(isLargeScreen ? safePadding * 1.5 : safePadding),
             child: Text(
               'Scanned Data: $scannedData',
-              style: const TextStyle(fontSize: 18),
+              style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
             ),
           ),
+          
+          // Attendee information display
           Container(
             width: deviceWidth,
-            padding: EdgeInsets.all(safePadding),
+            padding: EdgeInsets.all(isLargeScreen ? safePadding * 1.5 : safePadding),
             child: attendeeData!.isNotEmpty
             ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   'Name: ${attendeeData!['attendee_name'] ?? 'Unknown'}',
-                  style: const TextStyle(fontSize: 18),
-                ), SizedBox(height: safePadding),
-                if (currentSlot != null) ...[
+                  style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
+                ), 
+                SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
+                
+                if (qrMode == 'attendance' && currentSlot != null) ...[
                   Text(
                     'Slot: ${currentSlot!['slot_name']}',
-                    style: const TextStyle(fontSize: 18),
-                  ), SizedBox(height: safePadding),
+                    style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
+                  ), 
+                  SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
                   Text(
                     'Status: ${isPresent ? 'Present' : 'Absent'}',
                     style: TextStyle(
-                      fontSize: 18,
+                      fontSize: isLargeScreen ? 20 : 18,
                       color: isPresent ? Colors.green : Colors.red,
                       fontWeight: FontWeight.bold,
                     ),
-                  ), SizedBox(height: safePadding),
+                  ), 
+                  SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
                 ],
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                
+                // Action buttons
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    if (isSlotActive && currentSlot != null)
+                    // Attendance toggle (only in attendance mode and active slot)
+                    if (qrMode == 'attendance' && isSlotActive && currentSlot != null)
                       ElevatedButton(
                         onPressed: () {
                           setState(() {
@@ -351,55 +484,129 @@ class QRScannerPageState extends State<QRScannerPage> {
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isLargeScreen ? 24 : 16,
+                            vertical: isLargeScreen ? 16 : 12,
+                          ),
                         ),
-                        child: Text(isPresent ? 'Present' : 'Absent'),
-                      )
-                    else
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[200],
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'No active slot',
-                          style: TextStyle(color: Colors.grey),
+                        child: Text(
+                          isPresent ? 'Present' : 'Absent',
+                          style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
                         ),
                       ),
-                    Row(
-                      children: [
-                        ElevatedButton(
-                          onPressed: () async {
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => AttendeeProfilePage(attendee: attendeeData!),
-                              ),
-                            );
-                          },
-                          child: const Text('Profile'),
-                        ),
-                        const SizedBox(width: 8),
-                        if (isSlotActive && currentSlot != null)
-                          ElevatedButton(
-                            onPressed: () {
-                              updateCheckInOut(uid, isPresent);
-                              setState(() {
-                                scannedData = 'No data scanned yet';
-                                isScanning = true;
-                                attendeeData = {};
-                              });
-                            },
-                            child: const Text('Save'),
+                    
+                    // Profile button
+                    ElevatedButton(
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AttendeeProfilePage(attendee: attendeeData!),
                           ),
-                      ],
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isLargeScreen ? 24 : 16,
+                          vertical: isLargeScreen ? 16 : 12,
+                        ),
+                      ),
+                      child: Text(
+                        'View Profile',
+                        style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
+                      ),
+                    ),
+                    
+                    // Properties button (in profile mode)
+                    if (qrMode == 'profile')
+                      ElevatedButton(
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => PropertyEditorPage(attendee: attendeeData!),
+                            ),
+                          );
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isLargeScreen ? 24 : 16,
+                            vertical: isLargeScreen ? 16 : 12,
+                          ),
+                        ),
+                        child: Text(
+                          'Edit Properties',
+                          style: TextStyle(
+                            fontSize: isLargeScreen ? 16 : 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    
+                    // Save button (only in attendance mode)
+                    if (qrMode == 'attendance' && isSlotActive && currentSlot != null)
+                      ElevatedButton(
+                        onPressed: () {
+                          updateCheckInOut(uid, isPresent);
+                          setState(() {
+                            scannedData = 'No data scanned yet';
+                            isScanning = true;
+                            attendeeData = {};
+                          });
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isLargeScreen ? 24 : 16,
+                            vertical: isLargeScreen ? 16 : 12,
+                          ),
+                        ),
+                        child: Text(
+                          'Save Attendance',
+                          style: TextStyle(
+                            fontSize: isLargeScreen ? 16 : 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    
+                    // Scan again button
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          scannedData = 'No data scanned yet';
+                          isScanning = true;
+                          attendeeData = {};
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.grey,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isLargeScreen ? 24 : 16,
+                          vertical: isLargeScreen ? 16 : 12,
+                        ),
+                      ),
+                      child: Text(
+                        'Scan Again',
+                        style: TextStyle(
+                          fontSize: isLargeScreen ? 16 : 14,
+                          color: Colors.white,
+                        ),
+                      ),
                     ),
                   ],
                 ),
               ],
-            ) : const Text(
-              'No details available',
-              style: TextStyle(fontSize: 18),
+            ) : Text(
+              isWebOrDesktop 
+                  ? 'QR scanning not available on this platform. Please use a mobile device.'
+                  : 'No details available',
+              style: TextStyle(
+                fontSize: isLargeScreen ? 20 : 18,
+                color: isWebOrDesktop ? Colors.orange : null,
+              ),
+              textAlign: TextAlign.center,
             ),
           ),
         ],

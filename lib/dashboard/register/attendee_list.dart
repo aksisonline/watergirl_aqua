@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'qr_register.dart';
 

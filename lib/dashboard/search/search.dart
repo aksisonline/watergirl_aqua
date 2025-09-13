@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
 import '../register/attendee_profile.dart';
@@ -252,20 +253,24 @@ class _SearchPageState extends State<SearchPage> {
 
   @override
   Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    final isLargeScreen = screenSize.width > 600;
+    
     return Column(
       children: [
         // Slot Information
         if (currentSlot != null)
           Card(
             color: isSlotActive ? Colors.green[100] : Colors.orange[100],
-            margin: const EdgeInsets.all(16.0),
+            margin: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
             child: Padding(
-              padding: const EdgeInsets.all(8.0),
+              padding: EdgeInsets.all(isLargeScreen ? 16.0 : 8.0),
               child: Row(
                 children: [
                   Icon(
                     isSlotActive ? Icons.access_time : Icons.schedule,
                     color: isSlotActive ? Colors.green : Colors.orange,
+                    size: isLargeScreen ? 28 : 24,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -274,11 +279,14 @@ class _SearchPageState extends State<SearchPage> {
                       children: [
                         Text(
                           currentSlot!['slot_name'] ?? 'Unknown Slot',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: isLargeScreen ? 18 : 16,
+                          ),
                         ),
                         Text(
                           'Time: ${currentSlot!['slot_time_frame']}',
-                          style: const TextStyle(fontSize: 12),
+                          style: TextStyle(fontSize: isLargeScreen ? 14 : 12),
                         ),
                       ],
                     ),
@@ -288,6 +296,7 @@ class _SearchPageState extends State<SearchPage> {
                     style: TextStyle(
                       color: isSlotActive ? Colors.green : Colors.orange,
                       fontWeight: FontWeight.bold,
+                      fontSize: isLargeScreen ? 16 : 14,
                     ),
                   ),
                 ],
@@ -296,7 +305,7 @@ class _SearchPageState extends State<SearchPage> {
           ),
         
         Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
           child: TextField(
             controller: _searchController,
             decoration: const InputDecoration(
