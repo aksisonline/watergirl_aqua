@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:async';
 import '../register/attendee_profile.dart';
 import '../register/property_editor.dart';
 import '../../services/data_service.dart';
@@ -42,6 +43,8 @@ class QRScannerPageState extends State<QRScannerPage> {
   // QR scanning buffer variables
   DateTime? _lastScanTime;
   static const Duration _scanBuffer = Duration(seconds: 3);
+  int _scanCooldownSeconds = 0;
+  Timer? _cooldownTimer;
   
   // Windows camera variables
   List<camera_package.CameraDescription> _cameras = [];
@@ -57,6 +60,9 @@ class QRScannerPageState extends State<QRScannerPage> {
       return;
     }
     _lastScanTime = now;
+    
+    // Start cooldown timer
+    _startScanCooldown();
     
     // Search in cached data first
     final cachedAttendees = _dataService.attendees;
@@ -105,6 +111,23 @@ class QRScannerPageState extends State<QRScannerPage> {
         );
       }
     }
+  }
+
+  void _startScanCooldown() {
+    _cooldownTimer?.cancel();
+    setState(() {
+      _scanCooldownSeconds = _scanBuffer.inSeconds;
+    });
+    
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      setState(() {
+        _scanCooldownSeconds--;
+        if (_scanCooldownSeconds <= 0) {
+          timer.cancel();
+          _scanCooldownSeconds = 0;
+        }
+      });
+    });
   }
 
   void _checkCurrentAttendance() {
@@ -184,7 +207,10 @@ class QRScannerPageState extends State<QRScannerPage> {
       attendeeData = {};
       scannedData = 'No data scanned yet';
       _lastScanTime = null; // Reset scan buffer
+      _scanCooldownSeconds = 0; // Reset cooldown timer
     });
+    
+    _cooldownTimer?.cancel(); // Cancel any existing timer
     
     if (_isWindowsPlatform && _windowsCameraController != null) {
       // Restart Windows camera
@@ -406,6 +432,7 @@ class QRScannerPageState extends State<QRScannerPage> {
       controller.dispose();
     }
     _windowsCameraController?.dispose();
+    _cooldownTimer?.cancel(); // Cancel cooldown timer
     super.dispose();
   }
 
@@ -633,6 +660,34 @@ class QRScannerPageState extends State<QRScannerPage> {
           
           SizedBox(height: isLargeScreen ? 24 : 16),
           
+          // Scan Cooldown Indicator
+          if (_scanCooldownSeconds > 0)
+            Card(
+              color: Colors.amber[100],
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.timer,
+                      color: Colors.amber[800],
+                      size: isLargeScreen ? 24 : 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Next scan available in $_scanCooldownSeconds seconds',
+                      style: TextStyle(
+                        color: Colors.amber[800],
+                        fontWeight: FontWeight.w500,
+                        fontSize: isLargeScreen ? 16 : 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          
           // QR Scanner with responsive sizing
           Container(
             height: isLargeScreen ? 400 : 300,
@@ -804,11 +859,13 @@ class QRScannerPageState extends State<QRScannerPage> {
                       ElevatedButton(
                         onPressed: () {
                           updateCheckInOut(uid, isPresent);
+                          _cooldownTimer?.cancel(); // Cancel cooldown
                           setState(() {
                             scannedData = 'No data scanned yet';
                             isScanning = true;
                             attendeeData = {};
                             _lastScanTime = null; // Reset scan buffer
+                            _scanCooldownSeconds = 0; // Reset cooldown
                           });
                         },
                         style: ElevatedButton.styleFrom(
@@ -830,11 +887,13 @@ class QRScannerPageState extends State<QRScannerPage> {
                     // Scan again button
                     ElevatedButton(
                       onPressed: () {
+                        _cooldownTimer?.cancel(); // Cancel cooldown
                         setState(() {
                           scannedData = 'No data scanned yet';
                           isScanning = true;
                           attendeeData = {};
                           _lastScanTime = null; // Reset scan buffer
+                          _scanCooldownSeconds = 0; // Reset cooldown
                         });
                       },
                       style: ElevatedButton.styleFrom(
