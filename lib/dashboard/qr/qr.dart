@@ -4,9 +4,13 @@ import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import '../register/attendee_profile.dart';
 import '../register/property_editor.dart';
 import '../../services/data_service.dart';
+
+// Conditional import for Windows camera
+import 'package:camera/camera.dart' as camera_package;
 
 class QRScannerPage extends StatefulWidget {
   const QRScannerPage({super.key});
@@ -34,8 +38,26 @@ class QRScannerPageState extends State<QRScannerPage> {
   String qrMode = 'attendance'; // 'attendance' or 'profile' mode
   bool _isOnline = true;
   int _queuedChanges = 0;
+  
+  // QR scanning buffer variables
+  DateTime? _lastScanTime;
+  static const Duration _scanBuffer = Duration(seconds: 3);
+  
+  // Windows camera variables
+  List<camera_package.CameraDescription> _cameras = [];
+  camera_package.CameraController? _windowsCameraController;
+  int _selectedCameraIndex = 0;
+  bool _isWindowsPlatform = false;
 
   Future<void> searchDatabase(String scannedData) async {
+    // Check scan buffer - prevent rapid successive scans
+    final now = DateTime.now();
+    if (_lastScanTime != null && now.difference(_lastScanTime!) < _scanBuffer) {
+      print('Scan too soon, ignoring...');
+      return;
+    }
+    _lastScanTime = now;
+    
     // Search in cached data first
     final cachedAttendees = _dataService.attendees;
     final data = cachedAttendees.firstWhere(
@@ -161,9 +183,13 @@ class QRScannerPageState extends State<QRScannerPage> {
       isScanning = false;
       attendeeData = {};
       scannedData = 'No data scanned yet';
+      _lastScanTime = null; // Reset scan buffer
     });
     
-    if (!kIsWeb) {
+    if (_isWindowsPlatform && _windowsCameraController != null) {
+      // Restart Windows camera
+      _initWindowsCameraController(_selectedCameraIndex);
+    } else if (!kIsWeb) {
       controller.stop();
       controller.start();
     }
@@ -176,10 +202,50 @@ class QRScannerPageState extends State<QRScannerPage> {
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb) {
+    _isWindowsPlatform = !kIsWeb && Platform.isWindows;
+    
+    if (!kIsWeb && !_isWindowsPlatform) {
       controller = MobileScannerController();
     }
+    
     _initializeDataService();
+    
+    if (_isWindowsPlatform) {
+      _initializeWindowsCamera();
+    }
+  }
+  
+  Future<void> _initializeWindowsCamera() async {
+    try {
+      _cameras = await camera_package.availableCameras();
+      if (_cameras.isNotEmpty) {
+        await _initWindowsCameraController(_selectedCameraIndex);
+      }
+    } catch (e) {
+      print('Error initializing Windows camera: $e');
+    }
+  }
+  
+  Future<void> _initWindowsCameraController(int cameraIndex) async {
+    if (_cameras.isEmpty) return;
+    
+    _windowsCameraController?.dispose();
+    
+    _windowsCameraController = camera_package.CameraController(
+      _cameras[cameraIndex],
+      camera_package.ResolutionPreset.high,
+    );
+    
+    try {
+      await _windowsCameraController!.initialize();
+      if (mounted) {
+        setState(() {
+          _selectedCameraIndex = cameraIndex;
+        });
+      }
+    } catch (e) {
+      print('Error initializing Windows camera controller: $e');
+    }
   }
 
   Future<void> _initializeDataService() async {
@@ -267,16 +333,92 @@ class QRScannerPageState extends State<QRScannerPage> {
     return int.parse(parts[0]) * 60 + int.parse(parts[1]);
   }
 
+  Widget _buildCameraWidget(bool isWebOrDesktop) {
+    if (isWebOrDesktop && !_isWindowsPlatform) {
+      return Container(
+        color: Colors.grey[300],
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.qr_code_scanner, size: 64, color: Colors.grey),
+              SizedBox(height: 16),
+              Text(
+                'QR Scanner not available on web',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Please use mobile device for QR scanning',
+                style: TextStyle(color: Colors.grey, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (_isWindowsPlatform) {
+      if (_windowsCameraController?.value.isInitialized ?? false) {
+        return camera_package.CameraPreview(_windowsCameraController!);
+      } else {
+        return Container(
+          color: Colors.grey[300],
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text(
+                  'Initializing Windows Camera...',
+                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+    } else {
+      return MobileScanner(
+        controller: controller,
+        fit: BoxFit.cover,
+        onDetect: (capture) {
+          if (isScanning) {
+            final List<Barcode> barcodes = capture.barcodes;
+            for (final barcode in barcodes) {
+              setState(() {
+                scannedData = barcode.rawValue ?? 'Unknown data';
+                isScanning = false;
+              });
+              searchDatabase(scannedData);
+            }
+          }
+        },
+      );
+    }
+  }
+
   @override
   void dispose() {
-    if (!kIsWeb) {
+    if (!kIsWeb && !_isWindowsPlatform) {
       controller.dispose();
     }
+    _windowsCameraController?.dispose();
     super.dispose();
   }
 
   void toggleTorch() {
-    if (!kIsWeb) {
+    if (_isWindowsPlatform && _windowsCameraController != null) {
+      // Windows camera torch handling
+      setState(() {
+        torchOn = !torchOn;
+      });
+      _windowsCameraController!.setFlashMode(
+        torchOn ? camera_package.FlashMode.torch : camera_package.FlashMode.off
+      );
+    } else if (!kIsWeb) {
       setState(() {
         torchOn = !torchOn;
       });
@@ -359,6 +501,36 @@ class QRScannerPageState extends State<QRScannerPage> {
                           child: Text('Profile'),
                         ),
                       ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // Windows Camera Selector
+          if (_isWindowsPlatform && _cameras.isNotEmpty)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Camera: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                    DropdownButton<int>(
+                      value: _selectedCameraIndex,
+                      items: _cameras.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final camera = entry.value;
+                        return DropdownMenuItem<int>(
+                          value: index,
+                          child: Text('${camera.name} (${camera.lensDirection.name})'),
+                        );
+                      }).toList(),
+                      onChanged: (newIndex) async {
+                        if (newIndex != null && newIndex != _selectedCameraIndex) {
+                          await _initWindowsCameraController(newIndex);
+                        }
+                      },
                     ),
                   ],
                 ),
@@ -469,49 +641,10 @@ class QRScannerPageState extends State<QRScannerPage> {
             decoration: const BoxDecoration(
               borderRadius: BorderRadius.all(Radius.circular(8.0))
             ),
-            child: isWebOrDesktop 
-                ? Container(
-                    color: Colors.grey[300],
-                    child: const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.qr_code_scanner, size: 64, color: Colors.grey),
-                          SizedBox(height: 16),
-                          Text(
-                            'QR Scanner not available on web/desktop',
-                            style: TextStyle(color: Colors.grey, fontSize: 16),
-                            textAlign: TextAlign.center,
-                          ),
-                          SizedBox(height: 8),
-                          Text(
-                            'Please use mobile device for QR scanning',
-                            style: TextStyle(color: Colors.grey, fontSize: 14),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                : MobileScanner(
-                    controller: controller,
-                    fit: BoxFit.cover,
-                    onDetect: (capture) {
-                      if (isScanning) {
-                        final List<Barcode> barcodes = capture.barcodes;
-                        for (final barcode in barcodes) {
-                          setState(() {
-                            scannedData = barcode.rawValue ?? 'Unknown data';
-                            isScanning = false;
-                          });
-                          searchDatabase(scannedData);
-                        }
-                      }
-                    },
-                  ),
+            child: _buildCameraWidget(isWebOrDesktop),
           ),
           
-          if (!isWebOrDesktop) // Only show camera controls on mobile
+          if (!isWebOrDesktop && !_isWindowsPlatform) // Only show mobile camera controls
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -526,6 +659,27 @@ class QRScannerPageState extends State<QRScannerPage> {
                   onPressed: () {
                     if (!kIsWeb) controller.switchCamera();
                   },
+                ),
+              ],
+            ),
+          
+          // Windows camera controls
+          if (_isWindowsPlatform)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: Icon(torchOn ? Icons.flash_on : Icons.flash_off),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: toggleTorch,
+                  tooltip: 'Toggle Flash',
+                ),
+                const SizedBox(width: 16),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: refreshCamera,
+                  tooltip: 'Refresh Camera',
                 ),
               ],
             ),
@@ -654,6 +808,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                             scannedData = 'No data scanned yet';
                             isScanning = true;
                             attendeeData = {};
+                            _lastScanTime = null; // Reset scan buffer
                           });
                         },
                         style: ElevatedButton.styleFrom(
@@ -679,6 +834,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                           scannedData = 'No data scanned yet';
                           isScanning = true;
                           attendeeData = {};
+                          _lastScanTime = null; // Reset scan buffer
                         });
                       },
                       style: ElevatedButton.styleFrom(

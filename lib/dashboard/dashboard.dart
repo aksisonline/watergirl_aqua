@@ -22,7 +22,7 @@ class Dashboard extends StatefulWidget {
 
 class _DashboardState extends State<Dashboard> {
   late int _selectedIndex;
-  String _appBarTitle = 'Home';
+  String _appBarTitle = 'Register Page'; // Start with proper initial title
   final GlobalKey<QRScannerPageState> qrScannerKey = GlobalKey<QRScannerPageState>();
   final DataService _dataService = DataService();
   late List<Widget> _widgetOptions;

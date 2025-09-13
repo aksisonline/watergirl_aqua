@@ -41,6 +41,9 @@ dependencies:
   supabase_flutter: ^2.10.0
   connectivity_plus: ^6.2.0
   sqflite: ^2.3.0
+  
+  # Camera support for cross-platform including Windows
+  camera: ^0.11.0
 
 dev_dependencies:
   flutter_test:
