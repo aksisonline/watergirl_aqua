@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import '../register/attendee_profile.dart';
 
 class SearchPage extends StatefulWidget {
@@ -17,9 +19,15 @@ class _SearchPageState extends State<SearchPage> {
   List<Map<String, dynamic>> attendeeData = [];
   List<Map<String, dynamic>> _originalData = [];
   List<Map<String, dynamic>> availableProperties = [];
+  Map<String, Set<String>> propertyValues = {}; // Track unique values for each property
+  List<String> searchSuggestions = [];
   bool _isLoading = false;
   Map<String, dynamic>? currentSlot;
   bool isSlotActive = false;
+  bool _showQRScanner = false;
+  MobileScannerController? _qrController;
+  Map<String, String> _activeFilters = {}; // Property filters
+  bool _showSuggestions = false;
 
   @override
   void initState() {
@@ -32,6 +40,7 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void dispose() {
     _searchController.dispose();
+    _qrController?.dispose();
     super.dispose();
   }
 
@@ -48,9 +57,30 @@ class _SearchPageState extends State<SearchPage> {
     setState(() {
       _originalData = List<Map<String, dynamic>>.from(data);
       attendeeData = List<Map<String, dynamic>>.from(_originalData);
+      _extractPropertyValues(); // Extract unique property values
       _sortAttendees();
       _isLoading = false;
     });
+  }
+
+  void _extractPropertyValues() {
+    propertyValues.clear();
+    
+    for (final attendee in _originalData) {
+      if (attendee['attendee_properties'] != null) {
+        try {
+          final properties = json.decode(attendee['attendee_properties']) as Map<String, dynamic>;
+          properties.forEach((key, value) {
+            if (!propertyValues.containsKey(key)) {
+              propertyValues[key] = <String>{};
+            }
+            propertyValues[key]!.add(value.toString());
+          });
+        } catch (e) {
+          // Ignore parsing errors
+        }
+      }
+    }
   }
 
   Future<void> _loadCurrentSlot() async {
@@ -116,28 +146,197 @@ class _SearchPageState extends State<SearchPage> {
 
   void _filterData(String query) {
     setState(() {
+      _updateSearchSuggestions(query);
+      
       attendeeData = _originalData.where((item) {
         final name = item['attendee_name']?.toLowerCase() ?? '';
         final searchQuery = query.toLowerCase();
         
         // Search by name
-        if (name.contains(searchQuery)) return true;
+        bool matchesName = name.contains(searchQuery);
         
         // Search by properties
+        bool matchesProperties = false;
         if (item['attendee_properties'] != null) {
           try {
             final properties = json.decode(item['attendee_properties']) as Map<String, dynamic>;
-            return properties.values.any((value) => 
+            matchesProperties = properties.values.any((value) => 
               value.toString().toLowerCase().contains(searchQuery));
           } catch (e) {
             // Ignore parsing errors
           }
         }
         
-        return false;
+        // Apply active filters
+        bool matchesFilters = true;
+        if (_activeFilters.isNotEmpty && item['attendee_properties'] != null) {
+          try {
+            final properties = json.decode(item['attendee_properties']) as Map<String, dynamic>;
+            for (final filter in _activeFilters.entries) {
+              if (properties[filter.key]?.toString() != filter.value) {
+                matchesFilters = false;
+                break;
+              }
+            }
+          } catch (e) {
+            matchesFilters = false;
+          }
+        }
+        
+        return (query.isEmpty || matchesName || matchesProperties) && matchesFilters;
       }).toList();
       _sortAttendees();
     });
+  }
+
+  void _updateSearchSuggestions(String query) {
+    searchSuggestions.clear();
+    
+    if (query.length > 1) {
+      final queryLower = query.toLowerCase();
+      
+      // Add property-based suggestions
+      propertyValues.forEach((property, values) {
+        for (final value in values) {
+          if (value.toLowerCase().contains(queryLower)) {
+            searchSuggestions.add('$property: $value');
+          }
+        }
+      });
+      
+      // Limit suggestions
+      searchSuggestions = searchSuggestions.take(5).toList();
+    }
+    
+    _showSuggestions = query.isNotEmpty && searchSuggestions.isNotEmpty;
+  }
+
+  void _applyPropertyFilter(String property, String value) {
+    setState(() {
+      _activeFilters[property] = value;
+      _searchController.clear();
+      _showSuggestions = false;
+      _filterData('');
+    });
+  }
+
+  void _removeFilter(String property) {
+    setState(() {
+      _activeFilters.remove(property);
+      _filterData(_searchController.text);
+    });
+  }
+
+  void _clearAllFilters() {
+    setState(() {
+      _activeFilters.clear();
+      _searchController.clear();
+      _showSuggestions = false;
+      _filterData('');
+    });
+  }
+
+  void _showQRScannerModal() {
+    final isWebOrDesktop = kIsWeb || (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS));
+    
+    if (isWebOrDesktop) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('QR scanning is not available on web/desktop platforms'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
+    _qrController = MobileScannerController();
+    
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.8,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Scan QR Code',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () {
+                      _qrController?.dispose();
+                      Navigator.pop(context);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: MobileScanner(
+                controller: _qrController!,
+                onDetect: (barcode) {
+                  for (final code in barcode.barcodes) {
+                    final scannedData = code.rawValue ?? '';
+                    if (scannedData.isNotEmpty) {
+                      _qrController?.dispose();
+                      Navigator.pop(context);
+                      _searchByQR(scannedData);
+                      break;
+                    }
+                  }
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Point your camera at a QR code to find attendee details',
+                style: TextStyle(color: Colors.grey[600]),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _searchByQR(String uid) async {
+    try {
+      final data = await supabase
+          .from('attendee_details')
+          .select('*')
+          .eq('attendee_internal_uid', uid)
+          .maybeSingle();
+
+      if (data != null) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => AttendeeProfilePage(attendee: data),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No attendee found with this QR code')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error searching: $e')),
+      );
+    }
   }
 
   void _sortAttendees() {
@@ -255,6 +454,7 @@ class _SearchPageState extends State<SearchPage> {
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final isLargeScreen = screenSize.width > 600;
+    final isWebOrDesktop = kIsWeb || (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS));
     
     return Column(
       children: [
@@ -304,17 +504,149 @@ class _SearchPageState extends State<SearchPage> {
             ),
           ),
         
+        // Search Bar with QR Button
         Padding(
-          padding: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
-          child: TextField(
-            controller: _searchController,
-            decoration: const InputDecoration(
-              labelText: 'Search by name or properties',
-              border: OutlineInputBorder(),
-            ),
-            onChanged: _filterData,
+          padding: EdgeInsets.symmetric(
+            horizontal: isLargeScreen ? 24.0 : 16.0,
+            vertical: 8.0,
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: _searchController,
+                      decoration: InputDecoration(
+                        labelText: 'Search by name or properties',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: _searchController.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear),
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() {
+                                    _showSuggestions = false;
+                                  });
+                                  _filterData('');
+                                },
+                              )
+                            : null,
+                      ),
+                      onChanged: (value) {
+                        _filterData(value);
+                      },
+                      onTap: () {
+                        if (_searchController.text.isNotEmpty) {
+                          setState(() {
+                            _showSuggestions = true;
+                          });
+                        }
+                      },
+                    ),
+                    // Search Suggestions
+                    if (_showSuggestions && searchSuggestions.isNotEmpty)
+                      Container(
+                        width: double.infinity,
+                        constraints: const BoxConstraints(maxHeight: 150),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).cardColor,
+                          border: Border.all(color: Colors.grey[300]!),
+                          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(8)),
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: searchSuggestions.length,
+                          itemBuilder: (context, index) {
+                            final suggestion = searchSuggestions[index];
+                            final parts = suggestion.split(': ');
+                            if (parts.length == 2) {
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.label),
+                                title: Text(suggestion),
+                                onTap: () {
+                                  _applyPropertyFilter(parts[0], parts[1]);
+                                },
+                              );
+                            }
+                            return const SizedBox.shrink();
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              // QR Button
+              Container(
+                decoration: BoxDecoration(
+                  color: isWebOrDesktop ? Colors.grey[300] : Theme.of(context).primaryColor,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: IconButton(
+                  icon: Icon(
+                    Icons.qr_code_scanner,
+                    color: isWebOrDesktop ? Colors.grey[600] : Colors.white,
+                    size: isLargeScreen ? 28 : 24,
+                  ),
+                  onPressed: isWebOrDesktop ? null : _showQRScannerModal,
+                  tooltip: isWebOrDesktop 
+                      ? 'QR scanner not available on web/desktop'
+                      : 'Scan QR code',
+                ),
+              ),
+            ],
           ),
         ),
+
+        // Property Filter Chips
+        if (propertyValues.isNotEmpty)
+          Container(
+            padding: EdgeInsets.symmetric(horizontal: isLargeScreen ? 24.0 : 16.0),
+            height: 60,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                // Active filters
+                ..._activeFilters.entries.map((filter) => Container(
+                  margin: const EdgeInsets.only(right: 8),
+                  child: Chip(
+                    label: Text('${filter.key}: ${filter.value}'),
+                    deleteIcon: const Icon(Icons.close, size: 18),
+                    onDeleted: () => _removeFilter(filter.key),
+                    backgroundColor: Theme.of(context).primaryColor.withOpacity(0.2),
+                  ),
+                )),
+                
+                // Clear all filters button
+                if (_activeFilters.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(right: 16),
+                    child: ActionChip(
+                      label: const Text('Clear All'),
+                      onPressed: _clearAllFilters,
+                      backgroundColor: Colors.red.withOpacity(0.1),
+                    ),
+                  ),
+                
+                // Property filter buttons
+                ...propertyValues.entries.map((property) {
+                  if (_activeFilters.containsKey(property.key)) return const SizedBox.shrink();
+                  
+                  return Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    child: ActionChip(
+                      label: Text('${property.key} (${property.value.length})'),
+                      onPressed: () => _showPropertyFilterDialog(property.key, property.value),
+                      backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        
         _isLoading
         ? const CircularProgressIndicator()
         : Expanded(
@@ -326,44 +658,69 @@ class _SearchPageState extends State<SearchPage> {
               final attendeeId = item['attendee_internal_uid'];
               final attendeeName = item['attendee_name'] ?? 'Unknown';
               
-              return ListTile(
-                title: Text(attendeeName),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('ID: ${attendeeId ?? 'No ID'}'),
-                    if (item['attendee_properties'] != null)
-                      Text(
-                        'Properties: ${_formatProperties(item['attendee_properties'])}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                  ],
+              return Card(
+                margin: EdgeInsets.symmetric(
+                  horizontal: isLargeScreen ? 24.0 : 16.0,
+                  vertical: 4.0,
                 ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.person),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => AttendeeProfilePage(attendee: item),
-                          ),
-                        );
-                      },
-                      tooltip: 'View Profile',
+                child: ListTile(
+                  title: Text(
+                    attendeeName,
+                    style: TextStyle(
+                      fontSize: isLargeScreen ? 18 : 16,
+                      fontWeight: FontWeight.bold,
                     ),
-                    ElevatedButton(
-                      onPressed: isSlotActive ? () {
-                        _showConfirmationDialog(attendeeName, attendeeId, isPresent, index);
-                      } : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('ID: ${attendeeId ?? 'No ID'}'),
+                      if (item['attendee_properties'] != null)
+                        Wrap(
+                          children: _buildPropertyChips(item['attendee_properties'], isLargeScreen),
+                        ),
+                    ],
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: Icon(
+                          Icons.person,
+                          size: isLargeScreen ? 28 : 24,
+                        ),
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => AttendeeProfilePage(
+                                attendee: item,
+                                onPropertyTap: _applyPropertyFilter,
+                              ),
+                            ),
+                          );
+                        },
+                        tooltip: 'View Profile',
                       ),
-                      child: Text(isPresent ? 'Present' : 'Absent'),
-                    ),
-                  ],
+                      if (isSlotActive)
+                        ElevatedButton(
+                          onPressed: () {
+                            _showConfirmationDialog(attendeeName, attendeeId, isPresent, index);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: isLargeScreen ? 16 : 12,
+                              vertical: isLargeScreen ? 12 : 8,
+                            ),
+                          ),
+                          child: Text(
+                            isPresent ? 'Present' : 'Absent',
+                            style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               );
             },
@@ -371,6 +728,80 @@ class _SearchPageState extends State<SearchPage> {
         ),
       ],
     );
+  }
+
+  List<Widget> _buildPropertyChips(String? propertiesJson, bool isLargeScreen) {
+    if (propertiesJson == null) return [];
+    
+    try {
+      final properties = json.decode(propertiesJson) as Map<String, dynamic>;
+      return properties.entries.map((entry) => Container(
+        margin: const EdgeInsets.only(right: 4, top: 2),
+        child: GestureDetector(
+          onTap: () => _applyPropertyFilter(entry.key, entry.value.toString()),
+          child: Chip(
+            label: Text(
+              '${entry.key}: ${entry.value}',
+              style: TextStyle(fontSize: isLargeScreen ? 12 : 10),
+            ),
+            backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+      )).toList();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  void _showPropertyFilterDialog(String property, Set<String> values) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Filter by $property'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: ListView.builder(
+            itemCount: values.length,
+            itemBuilder: (context, index) {
+              final value = values.elementAt(index);
+              return ListTile(
+                title: Text(value),
+                trailing: Text(
+                  '${_getAttendeeCountForProperty(property, value)} attendees',
+                  style: TextStyle(color: Colors.grey[600]),
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  _applyPropertyFilter(property, value);
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  int _getAttendeeCountForProperty(String property, String value) {
+    return _originalData.where((attendee) {
+      if (attendee['attendee_properties'] != null) {
+        try {
+          final properties = json.decode(attendee['attendee_properties']) as Map<String, dynamic>;
+          return properties[property]?.toString() == value;
+        } catch (e) {
+          return false;
+        }
+      }
+      return false;
+    }).length;
   }
 
   String _formatProperties(String? propertiesJson) {

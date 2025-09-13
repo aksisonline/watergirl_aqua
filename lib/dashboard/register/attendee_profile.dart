@@ -5,8 +5,9 @@ import 'property_editor.dart';
 
 class AttendeeProfilePage extends StatefulWidget {
   final Map<String, dynamic> attendee;
+  final Function(String, String)? onPropertyTap;
 
-  const AttendeeProfilePage({super.key, required this.attendee});
+  const AttendeeProfilePage({super.key, required this.attendee, this.onPropertyTap});
 
   @override
   State<AttendeeProfilePage> createState() => _AttendeeProfilePageState();
@@ -147,7 +148,29 @@ class _AttendeeProfilePageState extends State<AttendeeProfilePage> {
                             ...properties.entries.map((entry) => 
                               Padding(
                                 padding: const EdgeInsets.symmetric(vertical: 2),
-                                child: Text('${entry.key}: ${entry.value}'),
+                                child: widget.onPropertyTap != null
+                                    ? GestureDetector(
+                                        onTap: () {
+                                          widget.onPropertyTap!(entry.key, entry.value.toString());
+                                          Navigator.pop(context); // Go back to search page
+                                        },
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).primaryColor.withOpacity(0.1),
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text('${entry.key}: ${entry.value}'),
+                                              const SizedBox(width: 4),
+                                              const Icon(Icons.filter_list, size: 16),
+                                            ],
+                                          ),
+                                        ),
+                                      )
+                                    : Text('${entry.key}: ${entry.value}'),
                               ),
                             ),
                         ],
