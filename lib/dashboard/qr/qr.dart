@@ -396,10 +396,6 @@ class QRScannerPageState extends State<QRScannerPage> {
                     ),
                   ],
                 ),
-                      child: const Text('Confirm'),
-                    ),
-                  ],
-                ),
               ],
             ) : const Text(
               'No details available',
