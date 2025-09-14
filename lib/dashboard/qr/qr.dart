@@ -42,9 +42,11 @@ class QRScannerPageState extends State<QRScannerPage> {
   
   // QR scanning buffer variables
   DateTime? _lastScanTime;
-  static const Duration _scanBuffer = Duration(seconds: 3);
+  static const Duration _scanBufferError = Duration(seconds: 3); // For errors
+  static const Duration _scanBufferNormal = Duration(seconds: 1); // Normal operation
   int _scanCooldownSeconds = 0;
   Timer? _cooldownTimer;
+  String? _lastScannedQR; // Track last scanned QR to prevent duplicates
   
   // Windows camera variables
   List<camera_package.CameraDescription> _cameras = [];
@@ -53,16 +55,26 @@ class QRScannerPageState extends State<QRScannerPage> {
   bool _isWindowsPlatform = false;
 
   Future<void> searchDatabase(String scannedData) async {
+    // Prevent duplicate QR scans
+    if (_lastScannedQR == scannedData) {
+      print('Same QR scanned, ignoring duplicate...');
+      return;
+    }
+    
+    // Determine scan buffer based on condition
+    final scanBuffer = _scanBufferNormal; // Default to normal 1-second buffer
+    
     // Check scan buffer - prevent rapid successive scans
     final now = DateTime.now();
-    if (_lastScanTime != null && now.difference(_lastScanTime!) < _scanBuffer) {
+    if (_lastScanTime != null && now.difference(_lastScanTime!) < scanBuffer) {
       print('Scan too soon, ignoring...');
       return;
     }
     _lastScanTime = now;
+    _lastScannedQR = scannedData; // Track this QR as last scanned
     
-    // Start cooldown timer
-    _startScanCooldown();
+    // Start cooldown timer with dynamic duration
+    _startScanCooldown(scanBuffer);
     
     // Search in cached data first
     final cachedAttendees = _dataService.attendees;
@@ -77,6 +89,11 @@ class QRScannerPageState extends State<QRScannerPage> {
         if (data.isNotEmpty) {
           // Check current attendance for the active slot
           _checkCurrentAttendance();
+          
+          // Auto-mark attendance if slot is active and in attendance mode
+          if (isSlotActive && qrMode == 'attendance' && currentSlot != null) {
+            _autoMarkAttendance();
+          }
         }
       });
     } else if (_isOnline) {
@@ -93,10 +110,17 @@ class QRScannerPageState extends State<QRScannerPage> {
           if (serverData != null) {
             // Check current attendance for the active slot
             _checkCurrentAttendance();
+            
+            // Auto-mark attendance if slot is active and in attendance mode
+            if (isSlotActive && qrMode == 'attendance' && currentSlot != null) {
+              _autoMarkAttendance();
+            }
           }
         });
       } catch (e) {
         print('Error searching server: $e');
+        // Use error buffer for failed attempts
+        _startScanCooldown(_scanBufferError);
         setState(() {
           attendeeData = {};
         });
@@ -113,10 +137,10 @@ class QRScannerPageState extends State<QRScannerPage> {
     }
   }
 
-  void _startScanCooldown() {
+  void _startScanCooldown(Duration buffer) {
     _cooldownTimer?.cancel();
     setState(() {
-      _scanCooldownSeconds = _scanBuffer.inSeconds;
+      _scanCooldownSeconds = buffer.inSeconds;
     });
     
     _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -127,6 +151,79 @@ class QRScannerPageState extends State<QRScannerPage> {
           _scanCooldownSeconds = 0;
         }
       });
+    });
+  }
+
+  Future<void> _autoMarkAttendance() async {
+    if (attendeeData == null || attendeeData!.isEmpty || currentSlot == null) {
+      return;
+    }
+    
+    final uid = attendeeData!['attendee_internal_uid'];
+    if (uid == null) return;
+    
+    try {
+      // Always mark as present (true) when scanned during active slot
+      await _dataService.updateAttendance(
+        attendeeId: uid,
+        slotId: currentSlot!['slot_id'].toString(),
+        isPresent: true,
+      );
+      
+      // Update queued changes count
+      _updateQueuedChangesCount();
+      
+      // Update local state
+      if (mounted) {
+        setState(() {
+          isPresent = true;
+        });
+      }
+      
+      // Show success feedback
+      final message = _isOnline 
+          ? 'Attendance marked as Present'
+          : 'Attendance queued for sync when online';
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      
+      // Auto-prepare for next scan after brief delay
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (mounted) {
+          _resetForNextScan();
+        }
+      });
+      
+    } catch (e) {
+      print('Error auto-marking attendance: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error marking attendance: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _resetForNextScan() {
+    _cooldownTimer?.cancel();
+    setState(() {
+      scannedData = 'No data scanned yet';
+      isScanning = true;
+      attendeeData = {};
+      _lastScanTime = null;
+      _scanCooldownSeconds = 0;
+      _lastScannedQR = null; // Reset to allow new scans
     });
   }
 
@@ -208,6 +305,7 @@ class QRScannerPageState extends State<QRScannerPage> {
       scannedData = 'No data scanned yet';
       _lastScanTime = null; // Reset scan buffer
       _scanCooldownSeconds = 0; // Reset cooldown timer
+      _lastScannedQR = null; // Reset last scanned QR
     });
     
     _cooldownTimer?.cancel(); // Cancel any existing timer
@@ -660,25 +758,27 @@ class QRScannerPageState extends State<QRScannerPage> {
           
           SizedBox(height: isLargeScreen ? 24 : 16),
           
-          // Scan Cooldown Indicator
+          // Scan Cooldown Indicator - show different messages for different modes
           if (_scanCooldownSeconds > 0)
             Card(
-              color: Colors.amber[100],
+              color: isSlotActive && qrMode == 'attendance' ? Colors.green[100] : Colors.amber[100],
               child: Padding(
                 padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
-                      Icons.timer,
-                      color: Colors.amber[800],
+                      isSlotActive && qrMode == 'attendance' ? Icons.check_circle : Icons.timer,
+                      color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
                       size: isLargeScreen ? 24 : 20,
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      'Next scan available in $_scanCooldownSeconds seconds',
+                      isSlotActive && qrMode == 'attendance' 
+                          ? 'Attendance marked! Next scan in $_scanCooldownSeconds seconds'
+                          : 'Next scan available in $_scanCooldownSeconds seconds',
                       style: TextStyle(
-                        color: Colors.amber[800],
+                        color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
                         fontWeight: FontWeight.w500,
                         fontSize: isLargeScreen ? 16 : 14,
                       ),
@@ -784,8 +884,37 @@ class QRScannerPageState extends State<QRScannerPage> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    // Attendance toggle (only in attendance mode and active slot)
+                    // Auto attendance status display (only in attendance mode and active slot)
                     if (qrMode == 'attendance' && isSlotActive && currentSlot != null)
+                      Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isLargeScreen ? 24 : 16,
+                          vertical: isLargeScreen ? 16 : 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.green[100],
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.green),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.check_circle, color: Colors.green, size: isLargeScreen ? 20 : 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Auto-marked as Present',
+                              style: TextStyle(
+                                fontSize: isLargeScreen ? 16 : 14,
+                                color: Colors.green[800],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    
+                    // Manual attendance toggle (only in attendance mode for inactive slots)
+                    if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
                       ElevatedButton(
                         onPressed: () {
                           setState(() {
@@ -854,19 +983,12 @@ class QRScannerPageState extends State<QRScannerPage> {
                         ),
                       ),
                     
-                    // Save button (only in attendance mode)
-                    if (qrMode == 'attendance' && isSlotActive && currentSlot != null)
+                    // Save button (only for inactive slots in attendance mode when manual toggle is used)
+                    if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
                       ElevatedButton(
                         onPressed: () {
                           updateCheckInOut(uid, isPresent);
-                          _cooldownTimer?.cancel(); // Cancel cooldown
-                          setState(() {
-                            scannedData = 'No data scanned yet';
-                            isScanning = true;
-                            attendeeData = {};
-                            _lastScanTime = null; // Reset scan buffer
-                            _scanCooldownSeconds = 0; // Reset cooldown
-                          });
+                          _resetForNextScan();
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green,
@@ -887,14 +1009,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                     // Scan again button
                     ElevatedButton(
                       onPressed: () {
-                        _cooldownTimer?.cancel(); // Cancel cooldown
-                        setState(() {
-                          scannedData = 'No data scanned yet';
-                          isScanning = true;
-                          attendeeData = {};
-                          _lastScanTime = null; // Reset scan buffer
-                          _scanCooldownSeconds = 0; // Reset cooldown
-                        });
+                        _resetForNextScan();
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.grey,
