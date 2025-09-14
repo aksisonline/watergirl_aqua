@@ -7,10 +7,14 @@ class AttendeeListNoUIDPage extends StatefulWidget {
   const AttendeeListNoUIDPage({super.key});
 
   @override
-  State<AttendeeListNoUIDPage> createState() => _AttendeeListNoUIDPageState();
+  State<AttendeeListNoUIDPage> createState() => AttendeeListNoUIDPageState();
+
+  static AttendeeListNoUIDPageState? of(BuildContext context) {
+    return context.findAncestorStateOfType<AttendeeListNoUIDPageState>();
+  }
 }
 
-class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
+class AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
   final SupabaseClient supabase = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
   List<Map<String, dynamic>> attendees = [];
@@ -69,6 +73,10 @@ class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
         _sortAttendees();
       });
     }
+  }
+
+  Future<void> refreshList() async {
+    await fetchAttendeesWithoutUID();
   }
 
   @override
@@ -130,3 +138,4 @@ class _AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
     );
   }
 }
+

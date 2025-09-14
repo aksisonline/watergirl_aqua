@@ -14,10 +14,14 @@ class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
   @override
-  State<SearchPage> createState() => _SearchPageState();
+  State<SearchPage> createState() => SearchPageState();
+
+  static SearchPageState? of(BuildContext context) {
+    return context.findAncestorStateOfType<SearchPageState>();
+  }
 }
 
-class _SearchPageState extends State<SearchPage> {
+class SearchPageState extends State<SearchPage> {
   final SupabaseClient supabase = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
   final DataService _dataService = DataService();
@@ -398,6 +402,14 @@ class _SearchPageState extends State<SearchPage> {
     } catch (e) {
       return false;
     }
+  }
+
+  Future<void> refreshData() async {
+    setState(() {
+      _isLoading = true;
+    });
+    await _dataService.refreshData();
+    // The listeners will update the UI when data is loaded
   }
 
   @override

@@ -24,9 +24,10 @@ class _DashboardState extends State<Dashboard> {
   late int _selectedIndex;
   String _appBarTitle = 'Register Page'; // Start with proper initial title
   final GlobalKey<QRScannerPageState> qrScannerKey = GlobalKey<QRScannerPageState>();
+  final GlobalKey<SearchPageState> searchPageKey = GlobalKey<SearchPageState>();
   final DataService _dataService = DataService();
   late List<Widget> _widgetOptions;
-  
+
   // Define page titles
   final List<String> _pageTitles = [
     'Register Page',
@@ -41,7 +42,7 @@ class _DashboardState extends State<Dashboard> {
     _updateAppBarTitle(); // Update title on init
     _widgetOptions = <Widget>[
       const AttendeeListNoUIDPage(),
-      const SearchPage(),
+      SearchPage(key: searchPageKey),
       QRScannerPage(key: qrScannerKey), // Use the GlobalKey here
     ];
   }
@@ -51,6 +52,14 @@ class _DashboardState extends State<Dashboard> {
       _selectedIndex = index;
       _updateAppBarTitle(); // Update title when tab changes
     });
+    // Refresh attendee list when switching to Register tab
+    if (index == 0) {
+      // ...refresh attendee list if needed...
+    }
+    // Refresh search page when switching to Search tab
+    if (index == 1 && searchPageKey.currentState != null) {
+      searchPageKey.currentState!.refreshData();
+    }
   }
 
   void _updateAppBarTitle() {

@@ -9,6 +9,7 @@ import 'dart:async';
 import '../register/attendee_profile.dart';
 import '../register/property_editor.dart';
 import '../../services/data_service.dart';
+import 'package:flutter/widgets.dart';
 import '../../services/camera_service.dart';
 
 // Conditional import for Windows camera
@@ -41,6 +42,7 @@ class QRScannerPageState extends State<QRScannerPage> {
   String qrMode = 'attendance';
   bool _isOnline = true;
   int _queuedChanges = 0;
+  List<Map<String, dynamic>> _allSlots = [];
 
   // QR scanning buffer variables
   DateTime? _lastScanTime;
@@ -302,7 +304,11 @@ class QRScannerPageState extends State<QRScannerPage> {
   @override
   void initState() {
     super.initState();
-    _initializeServices();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _initializeServices();
+      }
+    });
   }
 
   Future<void> _initializeServices() async {
@@ -326,6 +332,9 @@ class QRScannerPageState extends State<QRScannerPage> {
 
       _dataService.slotsStream.listen((slots) {
         if (mounted) {
+          setState(() {
+            _allSlots = slots;
+          });
           _updateCurrentSlotFromSlots(slots);
         }
       });
@@ -349,22 +358,29 @@ class QRScannerPageState extends State<QRScannerPage> {
     final now = DateTime.now();
     final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
-    Map<String, dynamic>? newCurrentSlot;
-    bool newIsSlotActive = false;
-
+    Map<String, dynamic>? activeSlot;
     for (final slot in slots) {
       final timeFrame = slot['slot_time_frame'] as String;
       if (_isTimeInRange(currentTime, timeFrame)) {
-        newCurrentSlot = slot;
-        newIsSlotActive = true;
+        activeSlot = slot;
         break;
       }
     }
 
     setState(() {
-      currentSlot = newCurrentSlot;
-      isSlotActive = newIsSlotActive;
-      qrMode = newIsSlotActive ? 'attendance' : 'profile';
+      if (activeSlot != null) {
+        isSlotActive = true;
+        currentSlot = activeSlot;
+        qrMode = 'attendance';
+      } else {
+        isSlotActive = false;
+        // Don't nullify currentSlot if it was manually selected
+        if (currentSlot == null && _allSlots.isNotEmpty) {
+          // Default to first slot if nothing is selected
+          // currentSlot = _allSlots.first;
+        }
+        qrMode = currentSlot != null ? 'attendance' : 'profile';
+      }
     });
   }
 
@@ -451,6 +467,11 @@ class QRScannerPageState extends State<QRScannerPage> {
         );
       }
     } else {
+      if (controller == null) {
+        return Center(
+          child: CircularProgressIndicator(),
+        );
+      }
       return MobileScanner(
         controller: controller!,
         fit: BoxFit.cover,
@@ -473,6 +494,7 @@ class QRScannerPageState extends State<QRScannerPage> {
   @override
   void dispose() {
     controller?.dispose();
+    controller = null;
     _cameraService.dispose();
     _cooldownTimer?.cancel();
     super.dispose();
@@ -543,32 +565,72 @@ class QRScannerPageState extends State<QRScannerPage> {
                 ),
               ),
 
-            // Mode Toggle for large screens
-            if (isLargeScreen)
+            // Mode Toggle (always show, not just for large screens)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Mode: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ToggleButtons(
+                      isSelected: [qrMode == 'attendance', qrMode == 'profile'],
+                      onPressed: (index) {
+                        setState(() {
+                          qrMode = index == 0 ? 'attendance' : 'profile';
+                        });
+                      },
+                      children: const [
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text('Attendance'),
+                        ),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text('Profile'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Slot Selector (when no slot is active)
+            if (!isSlotActive && _allSlots.isNotEmpty)
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Text('Mode: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                      ToggleButtons(
-                        isSelected: [qrMode == 'attendance', qrMode == 'profile'],
-                        onPressed: (index) {
-                          setState(() {
-                            qrMode = index == 0 ? 'attendance' : 'profile';
-                          });
-                        },
-                        children: const [
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 16),
-                            child: Text('Attendance'),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 16),
-                            child: Text('Profile'),
-                          ),
-                        ],
+                      const Text('Select Slot: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: DropdownButton<Map<String, dynamic>>(
+                          value: currentSlot,
+                          hint: const Text("Select a slot"),
+                          isExpanded: true,
+                          items: _allSlots.map((slot) {
+                            return DropdownMenuItem<Map<String, dynamic>>(
+                              value: slot,
+                              child: Text(
+                                slot['slot_name'] ?? 'Unnamed Slot',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (newSlot) {
+                            if (newSlot != null) {
+                              setState(() {
+                                currentSlot = newSlot;
+                                qrMode = 'attendance';
+                                _checkCurrentAttendance();
+                              });
+                            }
+                          },
+                        ),
                       ),
                     ],
                   ),
