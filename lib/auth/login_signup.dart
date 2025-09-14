@@ -14,12 +14,33 @@ class LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
   final _accessCodeController = TextEditingController();
   bool _isLoading = false;
+  // TEMPORARY: Set to true to enable mock login bypass
+  final bool _mockBypassEnabled = false;
+  final String _mockAccessCode = '123';
+  final String _mockVolunteerName = 'Mock Volunteer';
 
   Future<void> _signIn(BuildContext context) async {
     if (_formKey.currentState!.validate()) {
       setState(() {
         _isLoading = true;
       });
+
+      // TEMPORARY MOCK BYPASS
+      if (_mockBypassEnabled && _accessCodeController.text.trim() == _mockAccessCode) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('uac', _mockAccessCode);
+        await prefs.setString('volunteer_name', _mockVolunteerName);
+        setState(() {
+          _isLoading = false;
+        });
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const Dashboard()),
+          );
+        }
+        return;
+      }
 
       final SupabaseClient supabase = Supabase.instance.client;
 
@@ -98,8 +119,8 @@ class LoginPageState extends State<LoginPage> {
                 },
               ), const SizedBox(height: 24),
               _isLoading
-              ? const CircularProgressIndicator()
-              : ElevatedButton(
+                  ? const CircularProgressIndicator()
+                  : ElevatedButton(
                 onPressed: () => _signIn(context),
                 child: const Text('Access Dashboard'),
               ),

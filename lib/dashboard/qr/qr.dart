@@ -648,7 +648,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                         final camera = entry.value;
                         return DropdownMenuItem<int>(
                           value: index,
-                          child: Text('${camera.name} (${camera.lensDirection.name})'),
+                          child: Text('${camera.name}'),
                         );
                       }).toList(),
                       onChanged: (newIndex) async {
@@ -661,7 +661,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                 ),
               ),
             ),
-          
+
           // Slot Information
           if (currentSlot != null && qrMode == 'attendance')
             Card(
@@ -675,7 +675,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                       color: isSlotActive ? Colors.green : Colors.orange,
                       size: isLargeScreen ? 28 : 24,
                     ),
-                    const SizedBox(width: 8),
+
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -755,11 +755,10 @@ class QRScannerPageState extends State<QRScannerPage> {
                 ),
               ),
             ),
-          
+
           SizedBox(height: isLargeScreen ? 24 : 16),
-          
+
           // Scan Cooldown Indicator - show different messages for different modes
-          if (_scanCooldownSeconds > 0)
             Card(
               color: isSlotActive && qrMode == 'attendance' ? Colors.green[100] : Colors.amber[100],
               child: Padding(
@@ -770,11 +769,11 @@ class QRScannerPageState extends State<QRScannerPage> {
                     Icon(
                       isSlotActive && qrMode == 'attendance' ? Icons.check_circle : Icons.timer,
                       color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
-                      size: isLargeScreen ? 24 : 20,
+
                     ),
-                    const SizedBox(width: 8),
+
                     Text(
-                      isSlotActive && qrMode == 'attendance' 
+                      isSlotActive && qrMode == 'attendance'
                           ? 'Attendance marked! Next scan in $_scanCooldownSeconds seconds'
                           : 'Next scan available in $_scanCooldownSeconds seconds',
                       style: TextStyle(
@@ -787,8 +786,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                 ),
               ),
             ),
-          
-          // QR Scanner with responsive sizing
+
           Container(
             height: isLargeScreen ? 400 : 300,
             width: isLargeScreen ? 400 : double.infinity,
@@ -798,7 +796,7 @@ class QRScannerPageState extends State<QRScannerPage> {
             ),
             child: _buildCameraWidget(isWebOrDesktop),
           ),
-          
+
           if (!isWebOrDesktop && !_isWindowsPlatform) // Only show mobile camera controls
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -817,7 +815,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                 ),
               ],
             ),
-          
+
           // Windows camera controls
           if (_isWindowsPlatform)
             Row(
@@ -838,7 +836,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                 ),
               ],
             ),
-          
+
           Container(
             width: deviceWidth,
             padding: EdgeInsets.all(isLargeScreen ? safePadding * 1.5 : safePadding),
@@ -847,7 +845,7 @@ class QRScannerPageState extends State<QRScannerPage> {
               style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
             ),
           ),
-          
+
           // Attendee information display
           Container(
             width: deviceWidth,
@@ -859,14 +857,14 @@ class QRScannerPageState extends State<QRScannerPage> {
                 Text(
                   'Name: ${attendeeData!['attendee_name'] ?? 'Unknown'}',
                   style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
-                ), 
+                ),
                 SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
-                
+
                 if (qrMode == 'attendance' && currentSlot != null) ...[
                   Text(
                     'Slot: ${currentSlot!['slot_name']}',
                     style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
-                  ), 
+                  ),
                   SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
                   Text(
                     'Status: ${isPresent ? 'Present' : 'Absent'}',
@@ -875,10 +873,10 @@ class QRScannerPageState extends State<QRScannerPage> {
                       color: isPresent ? Colors.green : Colors.red,
                       fontWeight: FontWeight.bold,
                     ),
-                  ), 
+                  ),
                   SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
                 ],
-                
+
                 // Action buttons
                 Wrap(
                   spacing: 8,
@@ -912,7 +910,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                           ],
                         ),
                       ),
-                    
+
                     // Manual attendance toggle (only in attendance mode for inactive slots)
                     if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
                       ElevatedButton(
@@ -933,7 +931,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                           style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
                         ),
                       ),
-                    
+
                     // Profile button
                     ElevatedButton(
                       onPressed: () async {
@@ -955,7 +953,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                         style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
                       ),
                     ),
-                    
+
                     // Properties button (in profile mode)
                     if (qrMode == 'profile')
                       ElevatedButton(
@@ -982,7 +980,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                           ),
                         ),
                       ),
-                    
+
                     // Save button (only for inactive slots in attendance mode when manual toggle is used)
                     if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
                       ElevatedButton(
@@ -1005,7 +1003,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                           ),
                         ),
                       ),
-                    
+
                     // Scan again button
                     ElevatedButton(
                       onPressed: () {
@@ -1030,7 +1028,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                 ),
               ],
             ) : Text(
-              isWebOrDesktop 
+              isWebOrDesktop
                   ? 'QR scanning not available on this platform. Please use a mobile device.'
                   : 'No details available',
               style: TextStyle(
@@ -1045,3 +1043,12 @@ class QRScannerPageState extends State<QRScannerPage> {
     );
   }
 }
+
+
+
+
+
+
+
+
+

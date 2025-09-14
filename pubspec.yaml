@@ -39,9 +39,10 @@ dependencies:
   flutter_launcher_icons: ^0.14.4
   flutter_dotenv: ^6.0.0
   supabase_flutter: ^2.10.0
-  connectivity_plus: ^6.2.0
+  connectivity_plus: ^7.0.0
   sqflite: ^2.3.0
-  
+  sqflite_common_ffi: ^2.3.6
+  camera_windows: ^0.2.1
   # Camera support for cross-platform including Windows
   camera: ^0.11.0
 
