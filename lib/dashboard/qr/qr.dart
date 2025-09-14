@@ -1,7 +1,17 @@
 import 'package:watergirl_aqua/dimensions.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:convert';
+import 'dart:io' show Platform;
+import 'dart:async';
+import '../register/attendee_profile.dart';
+import '../register/property_editor.dart';
+import '../../services/data_service.dart';
+
+// Conditional import for Windows camera
+import 'package:camera/camera.dart' as camera_package;
 
 class QRScannerPage extends StatefulWidget {
   const QRScannerPage({super.key});
@@ -16,6 +26,7 @@ class QRScannerPage extends StatefulWidget {
 
 class QRScannerPageState extends State<QRScannerPage> {
   final SupabaseClient supabase = Supabase.instance.client;
+  final DataService _dataService = DataService();
 
   Map<String, dynamic>? attendeeData = {};
   late MobileScannerController controller;
@@ -23,33 +34,267 @@ class QRScannerPageState extends State<QRScannerPage> {
   bool torchOn = false; // Track torch state manually
   bool isPresent = false; // Add isPresent as a state variable
   bool isScanning = true; // Add isScanning flag
+  Map<String, dynamic>? currentSlot;
+  bool isSlotActive = false;
+  String qrMode = 'attendance'; // 'attendance' or 'profile' mode
+  bool _isOnline = true;
+  int _queuedChanges = 0;
+  
+  // QR scanning buffer variables
+  DateTime? _lastScanTime;
+  static const Duration _scanBufferError = Duration(seconds: 3); // For errors
+  static const Duration _scanBufferNormal = Duration(seconds: 1); // Normal operation
+  int _scanCooldownSeconds = 0;
+  Timer? _cooldownTimer;
+  String? _lastScannedQR; // Track last scanned QR to prevent duplicates
+  
+  // Windows camera variables
+  List<camera_package.CameraDescription> _cameras = [];
+  camera_package.CameraController? _windowsCameraController;
+  int _selectedCameraIndex = 0;
+  bool _isWindowsPlatform = false;
 
   Future<void> searchDatabase(String scannedData) async {
-    final data = await supabase
-        .from('attendee_details')
-        .select()
-        .eq('uid', scannedData)
-        .maybeSingle();
+    // Prevent duplicate QR scans
+    if (_lastScannedQR == scannedData) {
+      print('Same QR scanned, ignoring duplicate...');
+      return;
+    }
+    
+    // Determine scan buffer based on condition
+    final scanBuffer = _scanBufferNormal; // Default to normal 1-second buffer
+    
+    // Check scan buffer - prevent rapid successive scans
+    final now = DateTime.now();
+    if (_lastScanTime != null && now.difference(_lastScanTime!) < scanBuffer) {
+      print('Scan too soon, ignoring...');
+      return;
+    }
+    _lastScanTime = now;
+    _lastScannedQR = scannedData; // Track this QR as last scanned
+    
+    // Start cooldown timer with dynamic duration
+    _startScanCooldown(scanBuffer);
+    
+    // Search in cached data first
+    final cachedAttendees = _dataService.attendees;
+    final data = cachedAttendees.firstWhere(
+      (a) => a['attendee_internal_uid'] == scannedData,
+      orElse: () => {},
+    );
 
+    if (data.isNotEmpty) {
+      setState(() {
+        attendeeData = data;
+        if (data.isNotEmpty) {
+          // Check current attendance for the active slot
+          _checkCurrentAttendance();
+          
+          // Auto-mark attendance if slot is active and in attendance mode
+          if (isSlotActive && qrMode == 'attendance' && currentSlot != null) {
+            _autoMarkAttendance();
+          }
+        }
+      });
+    } else if (_isOnline) {
+      // Try server search if online and not in cache
+      try {
+        final serverData = await supabase
+            .from('attendee_details')
+            .select()
+            .eq('attendee_internal_uid', scannedData)
+            .maybeSingle();
+
+        setState(() {
+          attendeeData = serverData;
+          if (serverData != null) {
+            // Check current attendance for the active slot
+            _checkCurrentAttendance();
+            
+            // Auto-mark attendance if slot is active and in attendance mode
+            if (isSlotActive && qrMode == 'attendance' && currentSlot != null) {
+              _autoMarkAttendance();
+            }
+          }
+        });
+      } catch (e) {
+        print('Error searching server: $e');
+        // Use error buffer for failed attempts
+        _startScanCooldown(_scanBufferError);
+        setState(() {
+          attendeeData = {};
+        });
+      }
+    } else {
+      setState(() {
+        attendeeData = {};
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Attendee not found in offline cache')),
+        );
+      }
+    }
+  }
+
+  void _startScanCooldown(Duration buffer) {
+    _cooldownTimer?.cancel();
     setState(() {
-      attendeeData = data;
-      isPresent = attendeeData!['entry_time'] != null; // Update isPresent based on fetched data
+      _scanCooldownSeconds = buffer.inSeconds;
+    });
+    
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      setState(() {
+        _scanCooldownSeconds--;
+        if (_scanCooldownSeconds <= 0) {
+          timer.cancel();
+          _scanCooldownSeconds = 0;
+        }
+      });
     });
   }
 
-  Future<void> updateCheckInOut(String uid, bool newValue) async {
-    if (!mounted) return; // Check if the widget is still mounted
-
-    final currentTime = newValue ? DateTime.now().toIso8601String() : null;
-    await supabase
-    .from('attendee_details')
-    .update({'entry_time': currentTime})
-    .eq('uid', uid);
-
-    if (mounted && attendeeData != null) {
-      setState(() {
-        attendeeData!['entry_time'] = currentTime;
+  Future<void> _autoMarkAttendance() async {
+    if (attendeeData == null || attendeeData!.isEmpty || currentSlot == null) {
+      return;
+    }
+    
+    final uid = attendeeData!['attendee_internal_uid'];
+    if (uid == null) return;
+    
+    try {
+      // Always mark as present (true) when scanned during active slot
+      await _dataService.updateAttendance(
+        attendeeId: uid,
+        slotId: currentSlot!['slot_id'].toString(),
+        isPresent: true,
+      );
+      
+      // Update queued changes count
+      _updateQueuedChangesCount();
+      
+      // Update local state
+      if (mounted) {
+        setState(() {
+          isPresent = true;
+        });
+      }
+      
+      // Show success feedback
+      final message = _isOnline 
+          ? 'Attendance marked as Present'
+          : 'Attendance queued for sync when online';
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      
+      // Auto-prepare for next scan after brief delay
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (mounted) {
+          _resetForNextScan();
+        }
       });
+      
+    } catch (e) {
+      print('Error auto-marking attendance: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error marking attendance: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _resetForNextScan() {
+    _cooldownTimer?.cancel();
+    setState(() {
+      scannedData = 'No data scanned yet';
+      isScanning = true;
+      attendeeData = {};
+      _lastScanTime = null;
+      _scanCooldownSeconds = 0;
+      _lastScannedQR = null; // Reset to allow new scans
+    });
+  }
+
+  void _checkCurrentAttendance() {
+    if (attendeeData == null || currentSlot == null) {
+      isPresent = false;
+      return;
+    }
+
+    try {
+      final attendanceData = attendeeData!['attendee_attendance'];
+      if (attendanceData != null) {
+        final attendance = json.decode(attendanceData) as List;
+        final currentSlotId = currentSlot!['slot_id'].toString();
+        
+        final slotAttendance = attendance.firstWhere(
+          (a) => a['slot_id'].toString() == currentSlotId,
+          orElse: () => null,
+        );
+        
+        isPresent = slotAttendance?['attendance_bool'] == true;
+      } else {
+        isPresent = false;
+      }
+    } catch (e) {
+      print('Error checking attendance: $e');
+      isPresent = false;
+    }
+  }
+
+  Future<void> updateCheckInOut(String uid, bool newValue) async {
+    if (!mounted || currentSlot == null) return;
+
+    try {
+      // Use DataService for optimistic updates and offline queueing
+      await _dataService.updateAttendance(
+        attendeeId: uid,
+        slotId: currentSlot!['slot_id'].toString(),
+        isPresent: newValue,
+      );
+      
+      // Update queued changes count
+      _updateQueuedChangesCount();
+      
+      // Update local state
+      if (mounted && attendeeData != null) {
+        setState(() {
+          isPresent = newValue;
+        });
+      }
+      
+      // Show feedback based on connection status
+      final message = _isOnline 
+          ? 'Attendance updated successfully'
+          : 'Attendance queued for sync when online';
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: _isOnline ? Colors.green : Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error updating attendance: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error updating attendance: $e')),
+        );
+      }
     }
   }
 
@@ -58,9 +303,21 @@ class QRScannerPageState extends State<QRScannerPage> {
       isScanning = false;
       attendeeData = {};
       scannedData = 'No data scanned yet';
+      _lastScanTime = null; // Reset scan buffer
+      _scanCooldownSeconds = 0; // Reset cooldown timer
+      _lastScannedQR = null; // Reset last scanned QR
     });
-    controller.stop();
-    controller.start();
+    
+    _cooldownTimer?.cancel(); // Cancel any existing timer
+    
+    if (_isWindowsPlatform && _windowsCameraController != null) {
+      // Restart Windows camera
+      _initWindowsCameraController(_selectedCameraIndex);
+    } else if (!kIsWeb) {
+      controller.stop();
+      controller.start();
+    }
+    
     setState(() {
       isScanning = true;
     });
@@ -69,124 +326,718 @@ class QRScannerPageState extends State<QRScannerPage> {
   @override
   void initState() {
     super.initState();
-    controller = MobileScannerController();
+    _isWindowsPlatform = !kIsWeb && Platform.isWindows;
+    
+    if (!kIsWeb && !_isWindowsPlatform) {
+      controller = MobileScannerController();
+    }
+    
+    _initializeDataService();
+    
+    if (_isWindowsPlatform) {
+      _initializeWindowsCamera();
+    }
+  }
+  
+  Future<void> _initializeWindowsCamera() async {
+    try {
+      _cameras = await camera_package.availableCameras();
+      if (_cameras.isNotEmpty) {
+        await _initWindowsCameraController(_selectedCameraIndex);
+      }
+    } catch (e) {
+      print('Error initializing Windows camera: $e');
+    }
+  }
+  
+  Future<void> _initWindowsCameraController(int cameraIndex) async {
+    if (_cameras.isEmpty) return;
+    
+    _windowsCameraController?.dispose();
+    
+    _windowsCameraController = camera_package.CameraController(
+      _cameras[cameraIndex],
+      camera_package.ResolutionPreset.high,
+    );
+    
+    try {
+      await _windowsCameraController!.initialize();
+      if (mounted) {
+        setState(() {
+          _selectedCameraIndex = cameraIndex;
+        });
+      }
+    } catch (e) {
+      print('Error initializing Windows camera controller: $e');
+    }
+  }
+
+  Future<void> _initializeDataService() async {
+    try {
+      await _dataService.initialize();
+      
+      // Listen to connection status
+      _dataService.connectionStatusStream.listen((isOnline) {
+        if (mounted) {
+          setState(() {
+            _isOnline = isOnline;
+          });
+          _updateQueuedChangesCount();
+        }
+      });
+      
+      // Listen to slots changes
+      _dataService.slotsStream.listen((slots) {
+        if (mounted) {
+          _updateCurrentSlotFromSlots(slots);
+        }
+      });
+      
+      // Initialize current slot
+      _updateCurrentSlotFromSlots(_dataService.slots);
+      _updateQueuedChangesCount();
+      
+    } catch (e) {
+      print('Error initializing data service: $e');
+    }
+  }
+
+  void _updateCurrentSlotFromSlots(List<Map<String, dynamic>> slots) {
+    final now = DateTime.now();
+    final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    
+    Map<String, dynamic>? newCurrentSlot;
+    bool newIsSlotActive = false;
+    
+    for (final slot in slots) {
+      final timeFrame = slot['slot_time_frame'] as String;
+      if (_isTimeInRange(currentTime, timeFrame)) {
+        newCurrentSlot = slot;
+        newIsSlotActive = true;
+        break;
+      }
+    }
+    
+    setState(() {
+      currentSlot = newCurrentSlot;
+      isSlotActive = newIsSlotActive;
+      qrMode = newIsSlotActive ? 'attendance' : 'profile';
+    });
+  }
+
+  Future<void> _updateQueuedChangesCount() async {
+    final count = await _dataService.getQueuedChangesCount();
+    if (mounted) {
+      setState(() {
+        _queuedChanges = count;
+      });
+    }
+  }
+
+  bool _isTimeInRange(String currentTime, String timeFrame) {
+    try {
+      final parts = timeFrame.split('-');
+      if (parts.length != 2) return false;
+      
+      final startTime = parts[0].trim();
+      final endTime = parts[1].trim();
+      
+      final current = _timeToMinutes(currentTime);
+      final start = _timeToMinutes(startTime);
+      final end = _timeToMinutes(endTime);
+      
+      return current >= start && current <= end;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  int _timeToMinutes(String time) {
+    final parts = time.split(':');
+    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+  }
+
+  Widget _buildCameraWidget(bool isWebOrDesktop) {
+    if (isWebOrDesktop && !_isWindowsPlatform) {
+      return Container(
+        color: Colors.grey[300],
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.qr_code_scanner, size: 64, color: Colors.grey),
+              SizedBox(height: 16),
+              Text(
+                'QR Scanner not available on web',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Please use mobile device for QR scanning',
+                style: TextStyle(color: Colors.grey, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (_isWindowsPlatform) {
+      if (_windowsCameraController?.value.isInitialized ?? false) {
+        return camera_package.CameraPreview(_windowsCameraController!);
+      } else {
+        return Container(
+          color: Colors.grey[300],
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text(
+                  'Initializing Windows Camera...',
+                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+    } else {
+      return MobileScanner(
+        controller: controller,
+        fit: BoxFit.cover,
+        onDetect: (capture) {
+          if (isScanning) {
+            final List<Barcode> barcodes = capture.barcodes;
+            for (final barcode in barcodes) {
+              setState(() {
+                scannedData = barcode.rawValue ?? 'Unknown data';
+                isScanning = false;
+              });
+              searchDatabase(scannedData);
+            }
+          }
+        },
+      );
+    }
   }
 
   @override
   void dispose() {
-    controller.dispose();
+    if (!kIsWeb && !_isWindowsPlatform) {
+      controller.dispose();
+    }
+    _windowsCameraController?.dispose();
+    _cooldownTimer?.cancel(); // Cancel cooldown timer
     super.dispose();
   }
 
   void toggleTorch() {
-    setState(() {
-      torchOn = !torchOn;
-    });
-    controller.toggleTorch();
+    if (_isWindowsPlatform && _windowsCameraController != null) {
+      // Windows camera torch handling
+      setState(() {
+        torchOn = !torchOn;
+      });
+      _windowsCameraController!.setFlashMode(
+        torchOn ? camera_package.FlashMode.torch : camera_package.FlashMode.off
+      );
+    } else if (!kIsWeb) {
+      setState(() {
+        torchOn = !torchOn;
+      });
+      controller.toggleTorch();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final uid = attendeeData!['uid'];
+    final uid = attendeeData?['attendee_internal_uid'];
+    final screenSize = MediaQuery.of(context).size;
+    final isLargeScreen = screenSize.width > 600;
+    final isWebOrDesktop = kIsWeb;
 
     return Padding(
-      padding: const EdgeInsets.all(16.0),
+      padding: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
       child: Column(
         children: [
+          // Connection Status and Sync Info
+          if (!_isOnline || _queuedChanges > 0)
+            Card(
+              color: _isOnline ? Colors.orange[100] : Colors.red[100],
+              margin: EdgeInsets.only(bottom: isLargeScreen ? 16.0 : 8.0),
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      _isOnline ? Icons.sync : Icons.cloud_off,
+                      color: _isOnline ? Colors.orange : Colors.red,
+                      size: isLargeScreen ? 24 : 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _isOnline ? 'Syncing...' : 'Offline',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: isLargeScreen ? 14 : 12,
+                            ),
+                          ),
+                          if (_queuedChanges > 0)
+                            Text(
+                              '$_queuedChanges changes queued',
+                              style: TextStyle(fontSize: isLargeScreen ? 10 : 8),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          // Mode Toggle for large screens
+          if (isLargeScreen)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Mode: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ToggleButtons(
+                      isSelected: [qrMode == 'attendance', qrMode == 'profile'],
+                      onPressed: (index) {
+                        setState(() {
+                          qrMode = index == 0 ? 'attendance' : 'profile';
+                        });
+                      },
+                      children: const [
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text('Attendance'),
+                        ),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text('Profile'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // Windows Camera Selector
+          if (_isWindowsPlatform && _cameras.isNotEmpty)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Camera: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                    DropdownButton<int>(
+                      value: _selectedCameraIndex,
+                      items: _cameras.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final camera = entry.value;
+                        return DropdownMenuItem<int>(
+                          value: index,
+                          child: Text('${camera.name} (${camera.lensDirection.name})'),
+                        );
+                      }).toList(),
+                      onChanged: (newIndex) async {
+                        if (newIndex != null && newIndex != _selectedCameraIndex) {
+                          await _initWindowsCameraController(newIndex);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          
+          // Slot Information
+          if (currentSlot != null && qrMode == 'attendance')
+            Card(
+              color: isSlotActive ? Colors.green[100] : Colors.orange[100],
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      isSlotActive ? Icons.access_time : Icons.schedule,
+                      color: isSlotActive ? Colors.green : Colors.orange,
+                      size: isLargeScreen ? 28 : 24,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            currentSlot!['slot_name'] ?? 'Unknown Slot',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: isLargeScreen ? 18 : 16,
+                            ),
+                          ),
+                          Text(
+                            'Time: ${currentSlot!['slot_time_frame']}',
+                            style: TextStyle(fontSize: isLargeScreen ? 14 : 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      isSlotActive ? 'ACTIVE' : 'INACTIVE',
+                      style: TextStyle(
+                        color: isSlotActive ? Colors.green : Colors.orange,
+                        fontWeight: FontWeight.bold,
+                        fontSize: isLargeScreen ? 16 : 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else if (qrMode == 'profile')
+            Card(
+              color: Colors.blue[100],
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.person_search,
+                      color: Colors.blue,
+                      size: isLargeScreen ? 28 : 24,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Profile View Mode - Scan QR to view attendee details',
+                      style: TextStyle(
+                        color: Colors.blue[800],
+                        fontWeight: FontWeight.w500,
+                        fontSize: isLargeScreen ? 16 : 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Card(
+              color: Colors.grey[100],
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.schedule_outlined,
+                      color: Colors.grey,
+                      size: isLargeScreen ? 28 : 24,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'No active slot - Profile mode enabled',
+                      style: TextStyle(
+                        color: Colors.grey,
+                        fontSize: isLargeScreen ? 16 : 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          
+          SizedBox(height: isLargeScreen ? 24 : 16),
+          
+          // Scan Cooldown Indicator - show different messages for different modes
+          if (_scanCooldownSeconds > 0)
+            Card(
+              color: isSlotActive && qrMode == 'attendance' ? Colors.green[100] : Colors.amber[100],
+              child: Padding(
+                padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      isSlotActive && qrMode == 'attendance' ? Icons.check_circle : Icons.timer,
+                      color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
+                      size: isLargeScreen ? 24 : 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      isSlotActive && qrMode == 'attendance' 
+                          ? 'Attendance marked! Next scan in $_scanCooldownSeconds seconds'
+                          : 'Next scan available in $_scanCooldownSeconds seconds',
+                      style: TextStyle(
+                        color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
+                        fontWeight: FontWeight.w500,
+                        fontSize: isLargeScreen ? 16 : 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          
+          // QR Scanner with responsive sizing
           Container(
-            height: 300,
+            height: isLargeScreen ? 400 : 300,
+            width: isLargeScreen ? 400 : double.infinity,
             clipBehavior: Clip.hardEdge,
             decoration: const BoxDecoration(
               borderRadius: BorderRadius.all(Radius.circular(8.0))
             ),
-            child: MobileScanner(
-              controller: controller,
-              fit: BoxFit.cover, // Ensures the camera preview fills the container
-              onDetect: (capture) {
-                if (isScanning) {
-                  final List<Barcode> barcodes = capture.barcodes;
-                  for (final barcode in barcodes) {
-                    setState(() {
-                      scannedData = barcode.rawValue ?? 'Unknown data';
-                      isScanning = false; // Stop scanning
-                    });
-                    searchDatabase(scannedData); // Search the database
-                  }
-                }
-              },
+            child: _buildCameraWidget(isWebOrDesktop),
+          ),
+          
+          if (!isWebOrDesktop && !_isWindowsPlatform) // Only show mobile camera controls
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: Icon(torchOn ? Icons.flash_on : Icons.flash_off),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: toggleTorch,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.cameraswitch),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: () {
+                    if (!kIsWeb) controller.switchCamera();
+                  },
+                ),
+              ],
             ),
-          ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              IconButton(
-                icon: Icon(torchOn ? Icons.flash_on : Icons.flash_off),
-                onPressed: toggleTorch,
-              ),
-              IconButton(
-                icon: const Icon(Icons.cameraswitch),
-                onPressed: () => controller.switchCamera(),
-              ),
-            ],
-          ),
+          
+          // Windows camera controls
+          if (_isWindowsPlatform)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: Icon(torchOn ? Icons.flash_on : Icons.flash_off),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: toggleTorch,
+                  tooltip: 'Toggle Flash',
+                ),
+                const SizedBox(width: 16),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  iconSize: isLargeScreen ? 32 : 28,
+                  onPressed: refreshCamera,
+                  tooltip: 'Refresh Camera',
+                ),
+              ],
+            ),
+          
           Container(
             width: deviceWidth,
-            padding: EdgeInsets.all(safePadding),
+            padding: EdgeInsets.all(isLargeScreen ? safePadding * 1.5 : safePadding),
             child: Text(
               'Scanned Data: $scannedData',
-              style: const TextStyle(fontSize: 18),
+              style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
             ),
           ),
+          
+          // Attendee information display
           Container(
             width: deviceWidth,
-            padding: EdgeInsets.all(safePadding),
+            padding: EdgeInsets.all(isLargeScreen ? safePadding * 1.5 : safePadding),
             child: attendeeData!.isNotEmpty
             ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Name: ${attendeeData!['name']}',
-                  style: const TextStyle(fontSize: 18),
-                ), SizedBox(height: safePadding),
-                Text(
-                  'Email: ${attendeeData!['email']}',
-                  style: const TextStyle(fontSize: 18),
-                ), SizedBox(height: safePadding),
-                Text(
-                  'Current Status: ${attendeeData!['entry_time'] != null ? 'Present' : 'Absent'}',
-                  style: const TextStyle(fontSize: 18),
-                ), SizedBox(height: safePadding),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  'Name: ${attendeeData!['attendee_name'] ?? 'Unknown'}',
+                  style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
+                ), 
+                SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
+                
+                if (qrMode == 'attendance' && currentSlot != null) ...[
+                  Text(
+                    'Slot: ${currentSlot!['slot_name']}',
+                    style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
+                  ), 
+                  SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
+                  Text(
+                    'Status: ${isPresent ? 'Present' : 'Absent'}',
+                    style: TextStyle(
+                      fontSize: isLargeScreen ? 20 : 18,
+                      color: isPresent ? Colors.green : Colors.red,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ), 
+                  SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
+                ],
+                
+                // Action buttons
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
+                    // Auto attendance status display (only in attendance mode and active slot)
+                    if (qrMode == 'attendance' && isSlotActive && currentSlot != null)
+                      Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isLargeScreen ? 24 : 16,
+                          vertical: isLargeScreen ? 16 : 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.green[100],
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.green),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.check_circle, color: Colors.green, size: isLargeScreen ? 20 : 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Auto-marked as Present',
+                              style: TextStyle(
+                                fontSize: isLargeScreen ? 16 : 14,
+                                color: Colors.green[800],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    
+                    // Manual attendance toggle (only in attendance mode for inactive slots)
+                    if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
+                      ElevatedButton(
+                        onPressed: () {
+                          setState(() {
+                            isPresent = !isPresent;
+                          });
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isLargeScreen ? 24 : 16,
+                            vertical: isLargeScreen ? 16 : 12,
+                          ),
+                        ),
+                        child: Text(
+                          isPresent ? 'Present' : 'Absent',
+                          style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
+                        ),
+                      ),
+                    
+                    // Profile button
                     ElevatedButton(
-                      onPressed: () {
-                        setState(() {
-                          isPresent = !isPresent;
-                        });
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AttendeeProfilePage(attendee: attendeeData!),
+                          ),
+                        );
                       },
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isLargeScreen ? 24 : 16,
+                          vertical: isLargeScreen ? 16 : 12,
+                        ),
                       ),
-                      child: Text(isPresent ? 'Present' : 'Absent'),
+                      child: Text(
+                        'View Profile',
+                        style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
+                      ),
                     ),
+                    
+                    // Properties button (in profile mode)
+                    if (qrMode == 'profile')
+                      ElevatedButton(
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => PropertyEditorPage(attendee: attendeeData!),
+                            ),
+                          );
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isLargeScreen ? 24 : 16,
+                            vertical: isLargeScreen ? 16 : 12,
+                          ),
+                        ),
+                        child: Text(
+                          'Edit Properties',
+                          style: TextStyle(
+                            fontSize: isLargeScreen ? 16 : 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    
+                    // Save button (only for inactive slots in attendance mode when manual toggle is used)
+                    if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
+                      ElevatedButton(
+                        onPressed: () {
+                          updateCheckInOut(uid, isPresent);
+                          _resetForNextScan();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isLargeScreen ? 24 : 16,
+                            vertical: isLargeScreen ? 16 : 12,
+                          ),
+                        ),
+                        child: Text(
+                          'Save Attendance',
+                          style: TextStyle(
+                            fontSize: isLargeScreen ? 16 : 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    
+                    // Scan again button
                     ElevatedButton(
                       onPressed: () {
-                        updateCheckInOut(uid, isPresent);
-                        setState(() {
-                          scannedData = 'No data scanned yet';
-                          isScanning = true; // Resume scanning
-                          attendeeData = {};
-                        });
+                        _resetForNextScan();
                       },
-                      child: const Text('Confirm'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.grey,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isLargeScreen ? 24 : 16,
+                          vertical: isLargeScreen ? 16 : 12,
+                        ),
+                      ),
+                      child: Text(
+                        'Scan Again',
+                        style: TextStyle(
+                          fontSize: isLargeScreen ? 16 : 14,
+                          color: Colors.white,
+                        ),
+                      ),
                     ),
                   ],
                 ),
               ],
-            ) : const Text(
-              'No details available',
-              style: TextStyle(fontSize: 18),
+            ) : Text(
+              isWebOrDesktop 
+                  ? 'QR scanning not available on this platform. Please use a mobile device.'
+                  : 'No details available',
+              style: TextStyle(
+                fontSize: isLargeScreen ? 20 : 18,
+                color: isWebOrDesktop ? Colors.orange : null,
+              ),
+              textAlign: TextAlign.center,
             ),
           ),
         ],

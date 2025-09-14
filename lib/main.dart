@@ -5,6 +5,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'auth/login_signup.dart';
 import 'dashboard/dashboard.dart';
+import 'services/offline_service.dart';
+import 'services/data_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,6 +17,15 @@ void main() async {
     url: dotenv.env['SUPABASE_URL'] ?? '',
     anonKey: dotenv.env['SUPABASE_ANON_KEY'] ?? '',
   );
+
+  // Initialize offline service for preload optimizations
+  try {
+    await OfflineService().initialize();
+    await DataService().initialize();
+  } catch (e) {
+    print('Error initializing offline services: $e');
+    // Continue with app launch even if offline services fail
+  }
 
   runApp(const MyApp());
 }
@@ -30,20 +41,20 @@ class MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   Future<bool> _checkLoginStatus() async {
     final prefs = await SharedPreferences.getInstance();
-    final email = prefs.getString('email');
-    final password = prefs.getString('password');
+    final uac = prefs.getString('uac');
 
-    if (email != null && password != null) {
+    if (uac != null) {
+      // Verify that the UAC still exists in the database
       final SupabaseClient supabase = Supabase.instance.client;
       final response = await supabase
-          .from('volunteer_login')
+          .from('volunteer_access')
           .select()
-          .eq('email', email)
-          .eq('password', password);
+          .eq('uac', uac)
+          .maybeSingle();
 
-      return true;
+      return response != null;
     }
-    return true;
+    return false;
   }
 
   @override
