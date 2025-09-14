@@ -222,7 +222,7 @@ class MyAppState extends State<MyApp> with WidgetsBindingObserver {
             ).copyWith(
               elevatedButtonTheme: ElevatedButtonThemeData(
                 style: ButtonStyle(
-                  foregroundColor: MaterialStateProperty.all(Colors.black),
+                  foregroundColor: WidgetStateProperty.all(Colors.black),
                 ),
               ),
             ),
@@ -231,7 +231,7 @@ class MyAppState extends State<MyApp> with WidgetsBindingObserver {
             ).copyWith(
               elevatedButtonTheme: ElevatedButtonThemeData(
                 style: ButtonStyle(
-                  foregroundColor: MaterialStateProperty.all(Colors.white),
+                  foregroundColor: WidgetStateProperty.all(Colors.white),
                 ),
               ),
             ),

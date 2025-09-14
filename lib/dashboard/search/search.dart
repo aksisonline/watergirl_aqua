@@ -3,9 +3,12 @@ import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:convert';
-import 'dart:io' show Platform;
 import '../register/attendee_profile.dart';
 import '../../services/data_service.dart';
+import '../../services/camera_service.dart';
+
+// Conditional import for Windows camera
+import 'package:camera/camera.dart' as camera_package;
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -18,7 +21,8 @@ class _SearchPageState extends State<SearchPage> {
   final SupabaseClient supabase = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
   final DataService _dataService = DataService();
-  
+  final CameraService _cameraService = CameraService();
+
   List<Map<String, dynamic>> attendeeData = [];
   List<Map<String, dynamic>> _originalData = [];
   List<Map<String, dynamic>> availableProperties = [];
@@ -27,7 +31,6 @@ class _SearchPageState extends State<SearchPage> {
   bool _isLoading = false;
   Map<String, dynamic>? currentSlot;
   bool isSlotActive = false;
-  bool _showQRScanner = false;
   MobileScannerController? _qrController;
   Map<String, String> _activeFilters = {}; // Property filters
   bool _showSuggestions = false;
@@ -217,78 +220,38 @@ class _SearchPageState extends State<SearchPage> {
     });
   }
 
-  void _showQRScannerModal() {
-    final isWebOrDesktop = kIsWeb || (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS));
-    
-    if (isWebOrDesktop) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('QR scanning is not available on web/desktop platforms'),
-          duration: Duration(seconds: 3),
-        ),
-      );
-      return;
+  void _showQRScannerModal() async {
+    // Initialize camera service if not already done
+    if (!_cameraService.isInitialized) {
+      await _cameraService.initialize();
     }
 
-    _qrController = MobileScannerController();
-    
+    // For Windows, we need to initialize the camera before showing the modal
+    if (_cameraService.isWindowsPlatform && _cameraService.cameras.isNotEmpty) {
+      await _cameraService.stopCamera(); // Stop any existing camera usage
+      await _cameraService.initializeCamera(); // Initialize with saved preference
+    } else if (!_cameraService.isWindowsPlatform) {
+      _qrController = MobileScannerController();
+    }
+
+    if (!mounted) return;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.8,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Scan QR Code',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () {
-                      _qrController?.dispose();
-                      Navigator.pop(context);
-                    },
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: MobileScanner(
-                controller: _qrController!,
-                onDetect: (barcode) {
-                  for (final code in barcode.barcodes) {
-                    final scannedData = code.rawValue ?? '';
-                    if (scannedData.isNotEmpty) {
-                      _qrController?.dispose();
-                      Navigator.pop(context);
-                      _searchByQR(scannedData);
-                      break;
-                    }
-                  }
-                },
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'Point your camera at a QR code to find attendee details',
-                style: TextStyle(color: Colors.grey[600]),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ],
-        ),
+      builder: (context) => _QRScannerModalContent(
+        cameraService: _cameraService,
+        qrController: _qrController,
+        onQRDetected: (scannedData) {
+          Navigator.pop(context);
+          _searchByQR(scannedData);
+        },
+        onClose: () {
+          _qrController?.dispose();
+          _cameraService.stopCamera(); // Stop camera when closing
+          Navigator.pop(context);
+        },
       ),
     );
   }
@@ -441,8 +404,7 @@ class _SearchPageState extends State<SearchPage> {
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final isLargeScreen = screenSize.width > 600;
-    final isWebOrDesktop = kIsWeb || (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS));
-    
+
     return Column(
       children: [
         // Connection Status and Sync Info
@@ -620,19 +582,19 @@ class _SearchPageState extends State<SearchPage> {
               // QR Button
               Container(
                 decoration: BoxDecoration(
-                  color: isWebOrDesktop ? Colors.grey[300] : Theme.of(context).primaryColor,
+                  color: _cameraService.isWindowsPlatform || !kIsWeb ? Theme.of(context).primaryColor : Colors.grey[300],
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: IconButton(
                   icon: Icon(
                     Icons.qr_code_scanner,
-                    color: isWebOrDesktop ? Colors.grey[600] : Colors.white,
+                    color: _cameraService.isWindowsPlatform || !kIsWeb ? Colors.white : Colors.grey[600],
                     size: isLargeScreen ? 28 : 24,
                   ),
-                  onPressed: isWebOrDesktop ? null : _showQRScannerModal,
-                  tooltip: isWebOrDesktop 
-                      ? 'QR scanner not available on web/desktop'
-                      : 'Scan QR code',
+                  onPressed: _cameraService.isWindowsPlatform || !kIsWeb ? _showQRScannerModal : null,
+                  tooltip: _cameraService.isWindowsPlatform || !kIsWeb
+                      ? 'Scan QR code'
+                      : 'QR scanner not available on web',
                 ),
               ),
             ],
@@ -654,7 +616,7 @@ class _SearchPageState extends State<SearchPage> {
                     label: Text('${filter.key}: ${filter.value}'),
                     deleteIcon: const Icon(Icons.close, size: 18),
                     onDeleted: () => _removeFilter(filter.key),
-                    backgroundColor: Theme.of(context).primaryColor.withOpacity(0.2),
+                    backgroundColor: Theme.of(context).primaryColor.withAlpha(51),
                   ),
                 )),
                 
@@ -665,7 +627,7 @@ class _SearchPageState extends State<SearchPage> {
                     child: ActionChip(
                       label: const Text('Clear All'),
                       onPressed: _clearAllFilters,
-                      backgroundColor: Colors.red.withOpacity(0.1),
+                      backgroundColor: Colors.red.withAlpha(26),
                     ),
                   ),
                 
@@ -678,7 +640,7 @@ class _SearchPageState extends State<SearchPage> {
                     child: ActionChip(
                       label: Text('${property.key} (${property.value.length})'),
                       onPressed: () => _showPropertyFilterDialog(property.key, property.value),
-                      backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+                      backgroundColor: Theme.of(context).primaryColor.withAlpha(26),
                     ),
                   );
                 }),
@@ -688,109 +650,132 @@ class _SearchPageState extends State<SearchPage> {
         
         _isLoading
         ? const CircularProgressIndicator()
-        : Expanded(
-          child: ListView.builder(
-            itemCount: attendeeData.length,
-            itemBuilder: (context, index) {
-              final item = attendeeData[index];
-              final isPresent = _getCurrentAttendanceStatus(item);
-              final attendeeId = item['attendee_internal_uid'];
-              final attendeeName = item['attendee_name'] ?? 'Unknown';
-              
-              return Card(
-                margin: EdgeInsets.symmetric(
-                  horizontal: isLargeScreen ? 24.0 : 16.0,
-                  vertical: 4.0,
-                ),
-                child: ListTile(
-                  title: Text(
-                    attendeeName,
-                    style: TextStyle(
-                      fontSize: isLargeScreen ? 18 : 16,
-                      fontWeight: FontWeight.bold,
+        : attendeeData.isEmpty
+          ? Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.search_off,
+                      size: 64,
+                      color: Colors.grey[400],
                     ),
-                  ),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('ID: ${attendeeId ?? 'No ID'}'),
-                      if (item['attendee_properties'] != null)
-                        Wrap(
-                          children: _buildPropertyChips(item['attendee_properties'], isLargeScreen),
+                    const SizedBox(height: 16),
+                    Text(
+                      _activeFilters.isNotEmpty || _searchController.text.isNotEmpty
+                          ? 'No results found'
+                          : 'No attendees available',
+                      style: TextStyle(
+                        fontSize: 18,
+                        color: Colors.grey[600],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _activeFilters.isNotEmpty || _searchController.text.isNotEmpty
+                          ? 'Try adjusting your search or filters'
+                          : 'No attendee data has been loaded yet',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey[500],
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    if (_activeFilters.isNotEmpty || _searchController.text.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 16),
+                        child: ElevatedButton(
+                          onPressed: () {
+                            _searchController.clear();
+                            _clearAllFilters();
+                          },
+                          child: const Text('Clear All'),
                         ),
-                    ],
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: Icon(
-                          Icons.person,
-                          size: isLargeScreen ? 28 : 24,
+                      ),
+                  ],
+                ),
+              ),
+            )
+          : Expanded(
+              child: ListView.builder(
+                itemCount: attendeeData.length,
+                itemBuilder: (context, index) {
+                  final item = attendeeData[index];
+                  final isPresent = _getCurrentAttendanceStatus(item);
+                  final attendeeId = item['attendee_internal_uid'];
+                  final attendeeName = item['attendee_name'] ?? 'Unknown';
+                  return Card(
+                    margin: EdgeInsets.symmetric(
+                      horizontal: isLargeScreen ? 24.0 : 16.0,
+                      vertical: 4.0,
+                    ),
+                    child: ListTile(
+                      title: Text(
+                        attendeeName,
+                        style: TextStyle(
+                          fontSize: isLargeScreen ? 18 : 16,
+                          fontWeight: FontWeight.bold,
                         ),
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => AttendeeProfilePage(
-                                attendee: item,
-                                onPropertyTap: _applyPropertyFilter,
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('ID: ${attendeeId ?? 'No ID'}'),
+                          if (item['attendee_properties'] != null)
+                            Wrap(
+                              children: _buildPropertyChips(item['attendee_properties'], isLargeScreen),
+                            ),
+                        ],
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: Icon(
+                              Icons.person,
+                              size: isLargeScreen ? 28 : 24,
+                            ),
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => AttendeeProfilePage(
+                                    attendee: item,
+                                    onPropertyTap: _applyPropertyFilter,
+                                  ),
+                                ),
+                              );
+                            },
+                            tooltip: 'View Profile',
+                          ),
+                          if (isSlotActive)
+                            ElevatedButton(
+                              onPressed: () {
+                                _showConfirmationDialog(attendeeName, attendeeId, isPresent, index);
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: isLargeScreen ? 16 : 12,
+                                  vertical: isLargeScreen ? 12 : 8,
+                                ),
+                              ),
+                              child: Text(
+                                isPresent ? 'Present' : 'Absent',
+                                style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
                               ),
                             ),
-                          );
-                        },
-                        tooltip: 'View Profile',
+                        ],
                       ),
-                      if (isSlotActive)
-                        ElevatedButton(
-                          onPressed: () {
-                            _showConfirmationDialog(attendeeName, attendeeId, isPresent, index);
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
-                            padding: EdgeInsets.symmetric(
-                              horizontal: isLargeScreen ? 16 : 12,
-                              vertical: isLargeScreen ? 12 : 8,
-                            ),
-                          ),
-                          child: Text(
-                            isPresent ? 'Present' : 'Absent',
-                            style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
+                    ),
+                  );
+                },
+              ),
+            ),
       ],
     );
-  }
-
-  List<Widget> _buildPropertyChips(String? propertiesJson, bool isLargeScreen) {
-    if (propertiesJson == null) return [];
-    
-    try {
-      final properties = json.decode(propertiesJson) as Map<String, dynamic>;
-      return properties.entries.map((entry) => Container(
-        margin: const EdgeInsets.only(right: 4, top: 2),
-        child: GestureDetector(
-          onTap: () => _applyPropertyFilter(entry.key, entry.value.toString()),
-          child: Chip(
-            label: Text(
-              '${entry.key}: ${entry.value}',
-              style: TextStyle(fontSize: isLargeScreen ? 12 : 10),
-            ),
-            backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
-            visualDensity: VisualDensity.compact,
-          ),
-        ),
-      )).toList();
-    } catch (e) {
-      return [];
-    }
   }
 
   void _showPropertyFilterDialog(String property, Set<String> values) {
@@ -843,18 +828,175 @@ class _SearchPageState extends State<SearchPage> {
     }).length;
   }
 
-  String _formatProperties(String? propertiesJson) {
-    if (propertiesJson == null) return 'None';
-    
+  List<Widget> _buildPropertyChips(dynamic properties, bool isLargeScreen) {
+    if (properties == null) return [];
+
     try {
-      final properties = json.decode(propertiesJson) as Map<String, dynamic>;
-      if (properties.isEmpty) return 'None';
-      
-      return properties.entries
-          .map((entry) => '${entry.key}: ${entry.value}')
-          .join(', ');
+      final Map<String, dynamic> propertiesMap = properties is String
+          ? json.decode(properties)
+          : properties as Map<String, dynamic>;
+
+      return propertiesMap.entries.map((entry) {
+        return Padding(
+          padding: const EdgeInsets.only(right: 4.0, top: 4.0),
+          child: Chip(
+            label: Text(
+              '${entry.key}: ${entry.value}',
+              style: TextStyle(fontSize: isLargeScreen ? 12 : 10),
+            ),
+            padding: EdgeInsets.all(isLargeScreen ? 4 : 2),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        );
+      }).toList();
     } catch (e) {
-      return 'Invalid data';
+      return [Text('Error parsing properties: $e')];
+    }
+  }
+}
+
+
+class _QRScannerModalContent extends StatelessWidget {
+  final CameraService cameraService;
+  final MobileScannerController? qrController;
+  final Function(String) onQRDetected;
+  final VoidCallback onClose;
+
+  const _QRScannerModalContent({
+    required this.cameraService,
+    this.qrController,
+    required this.onQRDetected,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.8,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Scan QR Code',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: onClose,
+                ),
+              ],
+            ),
+          ),
+          // Show current camera info for Windows (read-only)
+          if (cameraService.isWindowsPlatform && cameraService.cameras.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue[200]!),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.camera_alt, color: Colors.blue[700], size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Using: ${cameraService.cameras[cameraService.selectedCameraIndex].name}',
+                      style: TextStyle(
+                        color: Colors.blue[800],
+                        fontWeight: FontWeight.w500,
+                        fontSize: 14,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    'Set in QR Scanner',
+                    style: TextStyle(
+                      color: Colors.blue[600],
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: cameraService.isWindowsPlatform
+                ? _buildWindowsCameraPreview()
+                : MobileScanner(
+                    controller: qrController!,
+                    onDetect: (barcode) {
+                      for (final code in barcode.barcodes) {
+                        final scannedData = code.rawValue ?? '';
+                        if (scannedData.isNotEmpty) {
+                          onQRDetected(scannedData);
+                          break;
+                        }
+                      }
+                    },
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              'Point your camera at a QR code to find attendee details',
+              style: TextStyle(color: Colors.grey[600]),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWindowsCameraPreview() {
+    if (cameraService.currentController?.value.isInitialized ?? false) {
+      return Container(
+        margin: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.grey[300]!),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: AspectRatio(
+            aspectRatio: cameraService.currentController!.value.aspectRatio,
+            child: camera_package.CameraPreview(cameraService.currentController!),
+          ),
+        ),
+      );
+    } else {
+      return Container(
+        margin: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey[300],
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text(
+                'Initializing Windows Camera...',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
     }
   }
 }
