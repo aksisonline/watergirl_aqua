@@ -1,4 +1,4 @@
-import 'package:watergirl_aqua/dimensions.dart';
+import 'package:Ploof/dimensions.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -31,7 +31,7 @@ class QRScannerPageState extends State<QRScannerPage> {
   final DataService _dataService = DataService();
   final CameraService _cameraService = CameraService();
 
-  Map<String, dynamic>? attendeeData = {};
+  Map<String, dynamic> attendeeData = {};
   MobileScannerController? controller;
   String scannedData = 'No data scanned yet';
   bool torchOn = false;
@@ -55,6 +55,7 @@ class QRScannerPageState extends State<QRScannerPage> {
   Future<void> searchDatabase(String scannedData) async {
     if (_lastScannedQR == scannedData) {
       print('Same QR scanned, ignoring duplicate...');
+      _resetForNextScan();
       return;
     }
 
@@ -96,7 +97,7 @@ class QRScannerPageState extends State<QRScannerPage> {
             .maybeSingle();
 
         setState(() {
-          attendeeData = serverData;
+          attendeeData = serverData ?? {};
           if (serverData != null) {
             _checkCurrentAttendance();
 
@@ -136,17 +137,20 @@ class QRScannerPageState extends State<QRScannerPage> {
         if (_scanCooldownSeconds <= 0) {
           timer.cancel();
           _scanCooldownSeconds = 0;
+          if (mounted) {
+            _resetForNextScan();
+          }
         }
       });
     });
   }
 
   Future<void> _autoMarkAttendance() async {
-    if (attendeeData == null || attendeeData!.isEmpty || currentSlot == null) {
+    if (attendeeData.isEmpty || currentSlot == null) {
       return;
     }
 
-    final uid = attendeeData!['attendee_internal_uid'];
+    final uid = attendeeData['attendee_internal_uid'];
     if (uid == null) return;
 
     try {
@@ -200,23 +204,18 @@ class QRScannerPageState extends State<QRScannerPage> {
   void _resetForNextScan() {
     _cooldownTimer?.cancel();
     setState(() {
-      scannedData = 'No data scanned yet';
       isScanning = true;
-      attendeeData = {};
-      _lastScanTime = null;
-      _scanCooldownSeconds = 0;
-      _lastScannedQR = null;
     });
   }
 
   void _checkCurrentAttendance() {
-    if (attendeeData == null || currentSlot == null) {
+    if (attendeeData.isEmpty || currentSlot == null) {
       isPresent = false;
       return;
     }
 
     try {
-      final attendanceData = attendeeData!['attendee_attendance'];
+      final attendanceData = attendeeData['attendee_attendance'];
       if (attendanceData != null) {
         final attendance = json.decode(attendanceData) as List;
         final currentSlotId = currentSlot!['slot_id'].toString();
@@ -248,7 +247,7 @@ class QRScannerPageState extends State<QRScannerPage> {
 
       _updateQueuedChangesCount();
 
-      if (mounted && attendeeData != null) {
+      if (mounted && attendeeData.isNotEmpty) {
         setState(() {
           isPresent = newValue;
         });
@@ -516,7 +515,7 @@ class QRScannerPageState extends State<QRScannerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final uid = attendeeData?['attendee_internal_uid'];
+    final uid = attendeeData['attendee_internal_uid'];
     final screenSize = MediaQuery.of(context).size;
     final isLargeScreen = screenSize.width > 600;
     final isWebOrDesktop = kIsWeb;
@@ -667,7 +666,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                             if (newIndex != null && newIndex != _cameraService.selectedCameraIndex) {
                               await _cameraService.initializeCamera(newIndex);
                               if (mounted) {
-                                setState(() {});
+                                setState(() {}); // Ensure UI updates after camera switch
                               }
                             }
                           },

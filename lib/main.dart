@@ -207,12 +207,7 @@ class MyAppState extends State<MyApp> with WidgetsBindingObserver {
       future: _checkLoginStatus(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return Center(
-            child: Image.asset(
-              'assets/logo/4x/Asset_2xxxhdpi.png', // Update this path to your launcher icon path
-              width: 200, // Adjust the size as needed
-              // height: 200,
-            ),
+          return Center(child: CircularProgressIndicator()
           );
         } else {
           return MaterialApp(

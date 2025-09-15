@@ -1,4 +1,4 @@
-name: watergirl_aqua
+name: Ploof
 description: "Version 2 of WaterGirl"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 2.0.0+1
 
 environment:
   sdk: ^3.9.2
@@ -45,6 +45,7 @@ dependencies:
   camera_windows: ^0.2.1
   # Camera support for cross-platform including Windows
   camera: ^0.11.0
+  flutter_svg: ^2.0.10
 
 dev_dependencies:
   flutter_test:
@@ -71,6 +72,8 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - .env
+    - assets/ploof-orange.svg
+    - assets/ploof-icon-transparent.png
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 
@@ -79,7 +82,11 @@ flutter:
 
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
-
+flutter_icons:
+    android: true
+    image_path: "assets/ploof-icon.png"
+    adaptive_icon_background: "#EBEBEB"
+    adaptive_icon_foreground: "assets/ploof-icon.png"
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a
   # "family" key with the font family name, and a "fonts" key with a

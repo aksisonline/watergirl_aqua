@@ -1,14 +1,14 @@
-import 'package:watergirl_aqua/dashboard/register/attendee_list.dart';
+import 'package:Ploof/dashboard/register/attendee_list.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // For platform detection
 import 'dart:io' show Platform; // For platform detection
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:watergirl_aqua/dimensions.dart';
+import 'package:Ploof/dimensions.dart';
 import '/auth/login_signup.dart';
 import 'search/search.dart';
-import 'package:watergirl_aqua/dashboard/qr/qr.dart';
+import 'package:Ploof/dashboard/qr/qr.dart';
 import '../services/data_service.dart';
 
 class Dashboard extends StatefulWidget {
@@ -57,8 +57,17 @@ class _DashboardState extends State<Dashboard> {
       // ...refresh attendee list if needed...
     }
     // Refresh search page when switching to Search tab
-    if (index == 1 && searchPageKey.currentState != null) {
-      searchPageKey.currentState!.refreshData();
+    if (index == 1) {
+      if (searchPageKey.currentState != null) {
+        searchPageKey.currentState!.refreshData();
+      } else {
+        // If not yet built, schedule refresh after build
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (searchPageKey.currentState != null) {
+            searchPageKey.currentState!.refreshData();
+          }
+        });
+      }
     }
   }
 

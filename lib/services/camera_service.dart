@@ -70,28 +70,46 @@ class CameraService {
   Future<camera_package.CameraController?> initializeCamera([int? cameraIndex]) async {
     if (!_isWindowsPlatform || _cameras.isEmpty) return null;
 
-    // Stop current controller if exists
-    await stopCamera();
-
     final index = cameraIndex ?? _selectedCameraIndex;
     if (index >= _cameras.length) return null;
 
-    _currentController = camera_package.CameraController(
-      _cameras[index],
-      camera_package.ResolutionPreset.high,
-    );
+    // Always dispose any existing controller before starting
+    await stopCamera();
 
-    try {
-      await _currentController!.initialize();
-      _selectedCameraIndex = index;
-      await _saveCameraPreference();
-      return _currentController;
-    } catch (e) {
-      print('Error initializing camera controller: $e');
-      _currentController?.dispose();
-      _currentController = null;
-      return null;
+    // Try high resolution first, then fallback to medium, then low
+    final List<camera_package.ResolutionPreset> presets = [
+      camera_package.ResolutionPreset.high,
+      camera_package.ResolutionPreset.medium,
+      camera_package.ResolutionPreset.low,
+    ];
+
+    for (final preset in presets) {
+      // Dispose previous controller before creating a new one
+      if (_currentController != null) {
+        await _currentController!.dispose();
+        _currentController = null;
+      }
+      _currentController = camera_package.CameraController(
+        _cameras[index],
+        preset,
+      );
+      try {
+        await _currentController!.initialize();
+        _selectedCameraIndex = index;
+        await _saveCameraPreference();
+        print('Camera initialized with preset: '
+            '${preset.toString()} on camera index: $index');
+        return _currentController;
+      } catch (e) {
+        print('Error initializing camera controller with preset '
+            '${preset.toString()} on camera index $index: $e');
+        // Dispose controller on error to ensure native resources are released
+        await _currentController?.dispose();
+        _currentController = null;
+      }
     }
+    print('All camera initialization attempts failed for camera index $index.');
+    return null;
   }
 
   Future<void> stopCamera() async {
