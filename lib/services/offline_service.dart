@@ -60,7 +60,7 @@ class OfflineService {
     
     _db = await openDatabase(
       path,
-      version: 1,
+      version: 2, // Increment version to trigger migration
       onCreate: (db, version) async {
         // Create tables for caching
         await db.execute('''
@@ -93,10 +93,27 @@ class OfflineService {
             attendee_id TEXT NOT NULL,
             slot_id TEXT NOT NULL,
             attendance_bool INTEGER NOT NULL,
+            interim_leave INTEGER DEFAULT 0,
+            out_time TEXT,
+            expected_return_time TEXT,
             timestamp INTEGER NOT NULL,
             synced INTEGER DEFAULT 0
           )
         ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          // Add interim leave columns to existing attendance_queue table
+          await db.execute('''
+            ALTER TABLE attendance_queue ADD COLUMN interim_leave INTEGER DEFAULT 0
+          ''');
+          await db.execute('''
+            ALTER TABLE attendance_queue ADD COLUMN out_time TEXT
+          ''');
+          await db.execute('''
+            ALTER TABLE attendance_queue ADD COLUMN expected_return_time TEXT
+          ''');
+        }
       },
     );
   }
@@ -245,6 +262,58 @@ class OfflineService {
       'attendee_id': attendeeId,
       'slot_id': slotId,
       'attendance_bool': attendanceBool ? 1 : 0,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'synced': 0,
+    });
+    
+    // Try to sync immediately if online
+    if (_isOnline) {
+      _syncQueuedData();
+    }
+  }
+
+  /// Queue attendance change with interim leave for later sync
+  Future<void> queueAttendanceChangeWithInterimLeave({
+    required String attendeeId,
+    required String slotId,
+    required bool attendanceBool,
+    required bool isInterimLeave,
+  }) async {
+    if (!_isInitialized) await initialize();
+    
+    final now = DateTime.now();
+    await _db.insert('attendance_queue', {
+      'attendee_id': attendeeId,
+      'slot_id': slotId,
+      'attendance_bool': attendanceBool ? 1 : 0,
+      'interim_leave': isInterimLeave ? 1 : 0,
+      'out_time': isInterimLeave ? now.toIso8601String() : null,
+      'expected_return_time': isInterimLeave 
+          ? now.add(const Duration(minutes: 10)).toIso8601String() 
+          : null,
+      'timestamp': now.millisecondsSinceEpoch,
+      'synced': 0,
+    });
+    
+    // Try to sync immediately if online
+    if (_isOnline) {
+      _syncQueuedData();
+    }
+  }
+
+  /// Queue attendance return for later sync
+  Future<void> queueAttendanceReturn({
+    required String attendeeId,
+    required String slotId,
+  }) async {
+    if (!_isInitialized) await initialize();
+    
+    await _db.insert('attendance_queue', {
+      'attendee_id': attendeeId,
+      'slot_id': slotId,
+      'attendance_bool': 1, // Still present, just returned
+      'interim_leave': 0, // No longer on interim leave
+      'actual_return_time': DateTime.now().toIso8601String(),
       'timestamp': DateTime.now().millisecondsSinceEpoch,
       'synced': 0,
     });

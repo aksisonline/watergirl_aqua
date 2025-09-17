@@ -4,6 +4,7 @@ import 'dart:io' show Platform;
 
 // Conditional import for Windows camera
 import 'package:camera/camera.dart' as camera_package;
+import 'package:flutter/material.dart'; // Added for Offset
 
 class CameraService {
   static final CameraService _instance = CameraService._internal();
@@ -73,10 +74,8 @@ class CameraService {
     final index = cameraIndex ?? _selectedCameraIndex;
     if (index >= _cameras.length) return null;
 
-    // Always dispose any existing controller before starting
     await stopCamera();
 
-    // Try high resolution first, then fallback to medium, then low
     final List<camera_package.ResolutionPreset> presets = [
       camera_package.ResolutionPreset.high,
       camera_package.ResolutionPreset.medium,
@@ -84,7 +83,6 @@ class CameraService {
     ];
 
     for (final preset in presets) {
-      // Dispose previous controller before creating a new one
       if (_currentController != null) {
         await _currentController!.dispose();
         _currentController = null;
@@ -92,9 +90,13 @@ class CameraService {
       _currentController = camera_package.CameraController(
         _cameras[index],
         preset,
+        enableAudio: false, // Explicitly disable audio
       );
       try {
         await _currentController!.initialize();
+        // Ensure auto focus and auto exposure are set after initialization
+        await _currentController!.setFocusMode(camera_package.FocusMode.auto);
+        await _currentController!.setExposureMode(camera_package.ExposureMode.auto);
         _selectedCameraIndex = index;
         await _saveCameraPreference();
         print('Camera initialized with preset: '
@@ -103,13 +105,32 @@ class CameraService {
       } catch (e) {
         print('Error initializing camera controller with preset '
             '${preset.toString()} on camera index $index: $e');
-        // Dispose controller on error to ensure native resources are released
         await _currentController?.dispose();
         _currentController = null;
       }
     }
     print('All camera initialization attempts failed for camera index $index.');
     return null;
+  }
+
+  Future<void> setFocusPoint(Offset point) async {
+    if (_currentController != null && _currentController!.value.isInitialized) {
+      try {
+        // Ensure focus mode is auto before setting point
+        if (_currentController!.value.focusMode != camera_package.FocusMode.auto) {
+          await _currentController!.setFocusMode(camera_package.FocusMode.auto);
+        }
+        // Ensure exposure mode is auto before setting point
+        if (_currentController!.value.exposureMode != camera_package.ExposureMode.auto) {
+          await _currentController!.setExposureMode(camera_package.ExposureMode.auto);
+        }
+        await _currentController!.setFocusPoint(point);
+        await _currentController!.setExposurePoint(point); // Also set exposure point
+        print('Focus point set to: $point');
+      } catch (e) {
+        print('Error setting focus point: $e');
+      }
+    }
   }
 
   Future<void> stopCamera() async {
@@ -120,7 +141,7 @@ class CameraService {
   }
 
   Future<void> setFlashMode(bool enabled) async {
-    if (_currentController != null) {
+    if (_currentController != null && _currentController!.value.isInitialized) {
       try {
         await _currentController!.setFlashMode(
           enabled ? camera_package.FlashMode.torch : camera_package.FlashMode.off

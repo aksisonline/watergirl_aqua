@@ -6,6 +6,8 @@ import 'dart:convert';
 import '../register/attendee_profile.dart';
 import '../../services/data_service.dart';
 import '../../services/camera_service.dart';
+import '../widgets/interim_leave_timer.dart';
+import '../../services/notification_service.dart';
 
 // Conditional import for Windows camera
 import 'package:camera/camera.dart' as camera_package;
@@ -36,7 +38,7 @@ class SearchPageState extends State<SearchPage> {
   Map<String, dynamic>? currentSlot;
   bool isSlotActive = false;
   MobileScannerController? _qrController;
-  Map<String, String> _activeFilters = {}; // Property filters
+  final Map<String, String> _activeFilters = {}; // Property filters
   bool _showSuggestions = false;
   bool _isOnline = true;
   int _queuedChanges = 0;
@@ -95,7 +97,7 @@ class SearchPageState extends State<SearchPage> {
       _updateQueuedChangesCount();
       
     } catch (e) {
-      print('Error initializing data service: $e');
+      // print('Error initializing data service: $e');
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -172,8 +174,9 @@ class SearchPageState extends State<SearchPage> {
   void _filterData(String query) {
     setState(() {
       _updateSearchSuggestions(query);
-      attendeeData = _dataService.searchAttendees(query, _activeFilters);
-      _sortAttendees();
+      final filteredData = _dataService.searchAttendees(query, _activeFilters);
+      attendeeData = _sortAttendeesWithInterimLeave(filteredData);
+      // _sortAttendees(); // Already handled by _sortAttendeesWithInterimLeave
     });
   }
 
@@ -248,12 +251,14 @@ class SearchPageState extends State<SearchPage> {
         cameraService: _cameraService,
         qrController: _qrController,
         onQRDetected: (scannedData) {
+          if (!mounted) return;
           Navigator.pop(context);
           _searchByQR(scannedData);
         },
         onClose: () {
           _qrController?.dispose();
           _cameraService.stopCamera(); // Stop camera when closing
+          if (!mounted) return;
           Navigator.pop(context);
         },
       ),
@@ -268,6 +273,7 @@ class SearchPageState extends State<SearchPage> {
       orElse: () => {},
     );
 
+    if (!mounted) return;
     if (attendee.isNotEmpty) {
       Navigator.push(
         context,
@@ -284,6 +290,7 @@ class SearchPageState extends State<SearchPage> {
             .eq('attendee_internal_uid', uid)
             .maybeSingle();
 
+        if (!mounted) return;
         if (data != null) {
           Navigator.push(
             context,
@@ -297,22 +304,25 @@ class SearchPageState extends State<SearchPage> {
           );
         }
       } catch (e) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error searching: $e')),
         );
       }
     } else {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Attendee not found in offline cache')),
       );
     }
   }
 
-  void _sortAttendees() {
-    attendeeData.sort((a, b) => (a['attendee_name'] ?? '').compareTo(b['attendee_name'] ?? ''));
-  }
+  // void _sortAttendees() {
+  //   attendeeData.sort((a, b) => (a['attendee_name'] ?? '').compareTo(b['attendee_name'] ?? ''));
+  // }
 
   void _showConfirmationDialog(String name, String attendeeId, bool isPresent, int index) async {
+    if (!mounted) return;
     if (!isSlotActive || currentSlot == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No active slot for attendance marking')),
@@ -322,6 +332,8 @@ class SearchPageState extends State<SearchPage> {
 
     final newValue = !isPresent;
     final status = newValue ? 'Present' : 'Absent';
+    
+    if (!mounted) return;
     final result = await showDialog<bool>(
       context: context,
       builder: (context) {
@@ -375,7 +387,7 @@ class SearchPageState extends State<SearchPage> {
         ),
       );
     } catch (e) {
-      print('Error updating attendance: $e');
+      // print('Error updating attendance: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error updating attendance: $e')),
@@ -401,6 +413,141 @@ class SearchPageState extends State<SearchPage> {
       return slotAttendance?['attendance_bool'] == true;
     } catch (e) {
       return false;
+    }
+  }
+
+  /// Check if attendee is currently on interim leave
+  bool _isOnInterimLeave(Map<String, dynamic> attendee) {
+    if (currentSlot == null || attendee['attendee_attendance'] == null) {
+      return false;
+    }
+
+    try {
+      final attendance = json.decode(attendee['attendee_attendance']) as List;
+      final currentSlotId = currentSlot!['slot_id'].toString();
+      
+      final slotAttendance = attendance.firstWhere(
+        (a) => a['slot_id'].toString() == currentSlotId,
+        orElse: () => null,
+      );
+      
+      return slotAttendance?['interim_leave'] == true && 
+             slotAttendance?['actual_return_time'] == null;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Get interim leave out time
+  DateTime? _getInterimLeaveOutTime(Map<String, dynamic> attendee) {
+    if (currentSlot == null || attendee['attendee_attendance'] == null) {
+      return null;
+    }
+
+    try {
+      final attendance = json.decode(attendee['attendee_attendance']) as List;
+      final currentSlotId = currentSlot!['slot_id'].toString();
+      
+      final slotAttendance = attendance.firstWhere(
+        (a) => a['slot_id'].toString() == currentSlotId,
+        orElse: () => null,
+      );
+      
+      if (slotAttendance?['interim_leave'] == true && 
+          slotAttendance?['out_time'] != null) {
+        return DateTime.tryParse(slotAttendance['out_time']);
+      }
+      
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Sort attendees to prioritize interim leave users and then by name
+  List<Map<String, dynamic>> _sortAttendeesWithInterimLeave(List<Map<String, dynamic>> attendees) {
+    final interimLeaveUsers = <Map<String, dynamic>>[];
+    final regularUsers = <Map<String, dynamic>>[];
+    
+    for (final attendee in attendees) {
+      if (_isOnInterimLeave(attendee)) {
+        interimLeaveUsers.add(attendee);
+      } else {
+        regularUsers.add(attendee);
+      }
+    }
+    
+    // Sort interim leave users by out time (most recent first)
+    interimLeaveUsers.sort((a, b) {
+      final timeA = _getInterimLeaveOutTime(a);
+      final timeB = _getInterimLeaveOutTime(b);
+      if (timeA == null && timeB == null) return 0;
+      if (timeA == null) return 1; // Nulls last
+      if (timeB == null) return -1; // Nulls last
+      return timeB.compareTo(timeA); // Most recent first
+    });
+
+    // Sort regular users by name
+    regularUsers.sort((a, b) => (a['attendee_name'] ?? '').compareTo(b['attendee_name'] ?? ''));
+    
+    return [...interimLeaveUsers, ...regularUsers];
+  }
+
+
+  /// Get active interim leave attendees for the timer widget
+  List<Map<String, dynamic>> _getActiveInterimLeaves() {
+    return attendeeData.where((attendee) => _isOnInterimLeave(attendee)).map((attendee) {
+      final outTime = _getInterimLeaveOutTime(attendee);
+      return {
+        'attendee_id': attendee['attendee_internal_uid'],
+        'name': attendee['attendee_name'],
+        'out_time': outTime?.toIso8601String(),
+      };
+    }).toList();
+  }
+
+  /// Handle attendee return from interim leave
+  Future<void> _handleAttendeeReturn(String attendeeId) async {
+    if (currentSlot == null) return;
+    try {
+      // Update attendance to mark return
+      await _dataService.updateAttendanceReturn(
+        attendeeId: attendeeId,
+        slotId: currentSlot!['slot_id'].toString(),
+      );
+
+      _updateQueuedChangesCount();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_isOnline
+                ? 'Attendee marked as returned'
+                : 'Return queued for sync when online'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+
+      // Show notification
+      final attendee = _originalData.firstWhere(
+        (a) => a['attendee_internal_uid'] == attendeeId,
+        orElse: () => {'attendee_name': 'Unknown'},
+      );
+      
+      await NotificationService.showReturnNotification(
+        attendee['attendee_name'] ?? 'Unknown'
+      );
+
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error marking return: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -661,7 +808,7 @@ class SearchPageState extends State<SearchPage> {
           ),
         
         _isLoading
-        ? const CircularProgressIndicator()
+        ? const Center(child: CircularProgressIndicator())
         : attendeeData.isEmpty
           ? Expanded(
               child: Center(
@@ -711,79 +858,174 @@ class SearchPageState extends State<SearchPage> {
               ),
             )
           : Expanded(
-              child: ListView.builder(
-                itemCount: attendeeData.length,
-                itemBuilder: (context, index) {
-                  final item = attendeeData[index];
-                  final isPresent = _getCurrentAttendanceStatus(item);
-                  final attendeeId = item['attendee_internal_uid'];
-                  final attendeeName = item['attendee_name'] ?? 'Unknown';
-                  return Card(
-                    margin: EdgeInsets.symmetric(
-                      horizontal: isLargeScreen ? 24.0 : 16.0,
-                      vertical: 4.0,
+              child: Column(
+                children: [
+                  // Interim Leave Timer Widget
+                  if (currentSlot != null && isSlotActive)
+                    InterimLeaveTimer(
+                      activeInterimLeaves: _getActiveInterimLeaves(),
+                      onReturnCallback: _handleAttendeeReturn,
+                      onRefresh: () => refreshData(),
                     ),
-                    child: ListTile(
-                      title: Text(
-                        attendeeName,
-                        style: TextStyle(
-                          fontSize: isLargeScreen ? 18 : 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('ID: ${attendeeId ?? 'No ID'}'),
-                          if (item['attendee_properties'] != null)
-                            Wrap(
-                              children: _buildPropertyChips(item['attendee_properties'], isLargeScreen),
+                  
+                  // Attendee List
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: attendeeData.length,
+                      itemBuilder: (context, index) {
+                        final item = attendeeData[index];
+                        final isPresent = _getCurrentAttendanceStatus(item);
+                        final isOnInterimLeave = _isOnInterimLeave(item);
+                        final outTime = _getInterimLeaveOutTime(item);
+                        final attendeeId = item['attendee_internal_uid'];
+                        final attendeeName = item['attendee_name'] ?? 'Unknown';
+                        
+                        // Determine card color and icon based on status
+                        Color? cardColor;
+                        IconData statusIcon = Icons.person;
+                        Color statusIconColor = Colors.grey;
+                        
+                        if (isOnInterimLeave && outTime != null) {
+                          final isOverdue = NotificationService.isOverdue(outTime);
+                          final isApproaching = NotificationService.isApproachingTimeout(outTime);
+                          
+                          if (isOverdue) {
+                            cardColor = Colors.red[100];
+                            statusIcon = Icons.warning;
+                            statusIconColor = Colors.red;
+                          } else if (isApproaching) {
+                            cardColor = Colors.orange[100];
+                            statusIcon = Icons.access_time;
+                            statusIconColor = Colors.orange;
+                          } else {
+                            cardColor = Colors.yellow[100];
+                            statusIcon = Icons.schedule;
+                            statusIconColor = Colors.orange;
+                          }
+                        } else if (isPresent) {
+                          statusIcon = Icons.check_circle;
+                          statusIconColor = Colors.green;
+                        } else {
+                          statusIcon = Icons.radio_button_unchecked;
+                          statusIconColor = Colors.grey;
+                        }
+                        
+                        return Card(
+                          margin: EdgeInsets.symmetric(
+                            horizontal: isLargeScreen ? 24.0 : 16.0,
+                            vertical: 4.0,
+                          ),
+                          color: cardColor,
+                          child: ListTile(
+                            leading: Icon(
+                              statusIcon,
+                              color: statusIconColor,
+                              size: isLargeScreen ? 32 : 28,
                             ),
-                        ],
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: Icon(
-                              Icons.person,
-                              size: isLargeScreen ? 28 : 24,
-                            ),
-                            onPressed: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => AttendeeProfilePage(
-                                    attendee: item,
-                                    onPropertyTap: _applyPropertyFilter,
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    attendeeName,
+                                    style: TextStyle(
+                                      fontSize: isLargeScreen ? 18 : 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ),
-                              );
-                            },
-                            tooltip: 'View Profile',
-                          ),
-                          if (isSlotActive)
-                            ElevatedButton(
-                              onPressed: () {
-                                _showConfirmationDialog(attendeeName, attendeeId, isPresent, index);
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: isLargeScreen ? 16 : 12,
-                                  vertical: isLargeScreen ? 12 : 8,
-                                ),
-                              ),
-                              child: Text(
-                                isPresent ? 'Present' : 'Absent',
-                                style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
-                              ),
+                                if (isOnInterimLeave && outTime != null)
+                                  InterimLeaveTimerSimple(
+                                    outTime: outTime,
+                                    attendeeName: attendeeName,
+                                  ),
+                              ],
                             ),
-                        ],
-                      ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('ID: ${attendeeId ?? 'No ID'}'),
+                                if (isOnInterimLeave)
+                                  Text(
+                                    'ON INTERIM LEAVE',
+                                    style: TextStyle(
+                                      color: Colors.orange[800],
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                if (item['attendee_properties'] != null)
+                                  Wrap(
+                                    children: _buildPropertyChips(item['attendee_properties'], isLargeScreen),
+                                  ),
+                              ],
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // Return button for interim leave users
+                                if (isOnInterimLeave)
+                                  ElevatedButton.icon(
+                                    onPressed: () => _handleAttendeeReturn(attendeeId),
+                                    icon: const Icon(Icons.check_circle, size: 16),
+                                    label: const Text('Return'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: isLargeScreen ? 12 : 8,
+                                        vertical: isLargeScreen ? 8 : 4,
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  IconButton(
+                                    icon: Icon(
+                                      Icons.person,
+                                      size: isLargeScreen ? 28 : 24,
+                                    ),
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => AttendeeProfilePage(
+                                            attendee: item,
+                                            onPropertyTap: _applyPropertyFilter,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    tooltip: 'View Profile',
+                                  ),
+                                
+                                const SizedBox(width: 8),
+                                
+                                // Attendance button for active slots
+                                if (isSlotActive && !isOnInterimLeave)
+                                  ElevatedButton(
+                                    onPressed: () {
+                                      _showConfirmationDialog(attendeeName, attendeeId, isPresent, index);
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: isLargeScreen ? 16 : 12,
+                                        vertical: isLargeScreen ? 12 : 8,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      isPresent ? 'Present' : 'Absent',
+                                      style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            isThreeLine: true,
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
+                  ),
+                ],
               ),
             ),
       ],
@@ -875,6 +1117,7 @@ class _QRScannerModalContent extends StatelessWidget {
   final VoidCallback onClose;
 
   const _QRScannerModalContent({
+    // super.key, // Removed as it was unused
     required this.cameraService,
     this.qrController,
     required this.onQRDetected,
@@ -944,7 +1187,7 @@ class _QRScannerModalContent extends StatelessWidget {
             ),
           Expanded(
             child: cameraService.isWindowsPlatform
-                ? _buildWindowsCameraPreview()
+                ? _buildWindowsCameraPreview(context) // Pass context here
                 : MobileScanner(
                     controller: qrController!,
                     onDetect: (barcode) {
@@ -971,7 +1214,7 @@ class _QRScannerModalContent extends StatelessWidget {
     );
   }
 
-  Widget _buildWindowsCameraPreview() {
+  Widget _buildWindowsCameraPreview(BuildContext context) { // Accept context here
     if (cameraService.currentController?.value.isInitialized ?? false) {
       return Container(
         margin: const EdgeInsets.all(16),
@@ -983,7 +1226,30 @@ class _QRScannerModalContent extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           child: AspectRatio(
             aspectRatio: cameraService.currentController!.value.aspectRatio,
-            child: camera_package.CameraPreview(cameraService.currentController!),
+            child: GestureDetector(
+              onTapUp: (details) {
+                final Offset tapPosition = details.localPosition;
+                // It's crucial that the RenderBox is from the CameraPreview itself
+                // or a widget that has the exact same size and position as the CameraPreview.
+                // If the GestureDetector wraps a parent widget that is larger than the preview,
+                // the coordinates will be off.
+                // Using context.findRenderObject() from the GestureDetector's build context
+                // should correctly get the RenderBox of the GestureDetector itself.
+                final RenderBox? renderBox = context.findRenderObject() as RenderBox?;
+                if (renderBox == null) return;
+                final Offset localOffset = renderBox.globalToLocal(tapPosition);
+                
+                // Normalize coordinates to range 0.0 - 1.0
+                final double x = localOffset.dx / renderBox.size.width;
+                final double y = localOffset.dy / renderBox.size.height;
+                
+                // Ensure coordinates are within the valid range
+                if (x >= 0.0 && x <= 1.0 && y >= 0.0 && y <= 1.0) {
+                  cameraService.setFocusPoint(Offset(x,y));
+                }
+              },
+              child: camera_package.CameraPreview(cameraService.currentController!),
+            ),
           ),
         ),
       );

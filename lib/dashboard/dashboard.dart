@@ -9,6 +9,7 @@ import 'package:Ploof/dimensions.dart';
 import '/auth/login_signup.dart';
 import 'search/search.dart';
 import 'package:Ploof/dashboard/qr/qr.dart';
+import 'settings/settings_screen.dart';
 import '../services/data_service.dart';
 
 class Dashboard extends StatefulWidget {
@@ -33,6 +34,7 @@ class _DashboardState extends State<Dashboard> {
     'Register Page',
     'Search',
     'QR Scanner', // This will be dynamic
+    'Settings',
   ];
 
   @override
@@ -44,6 +46,7 @@ class _DashboardState extends State<Dashboard> {
       const AttendeeListNoUIDPage(),
       SearchPage(key: searchPageKey),
       QRScannerPage(key: qrScannerKey), // Use the GlobalKey here
+      const SettingsScreen(),
     ];
   }
 
@@ -258,6 +261,7 @@ class _DashboardState extends State<Dashboard> {
                   BottomNavigationBarItem(icon: Icon(Icons.qr_code), label: 'Register'),
                   BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
                   BottomNavigationBarItem(icon: Icon(Icons.document_scanner_outlined), label: 'QR Scanner'),
+                  BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),
                 ],
               ),
             ),

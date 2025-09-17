@@ -11,12 +11,15 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        // Flag to enable support for the new language APIs
+        isCoreLibraryDesugaringEnabled = true
+        // Sets Java compatibility to Java 8
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_11.toString()
+        jvmTarget = JavaVersion.VERSION_11.toString() // Existing value, not changed as per request
     }
 
     defaultConfig {
@@ -28,6 +31,8 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Required when setting minSdkVersion to 20 or lower
+        multiDexEnabled = true
     }
 
     buildTypes {
@@ -41,4 +46,9 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // For AGP 7.4+
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
 }

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Ploof/dashboard/dashboard.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'property_settings_screen.dart';
+import '../services/property_validation_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -30,14 +32,32 @@ class LoginPageState extends State<LoginPage> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('uac', _mockAccessCode);
         await prefs.setString('volunteer_name', _mockVolunteerName);
+        
+        // Check if volunteer has configured property settings
+        final hasSettings = await PropertyValidationService.hasConfiguredSettings();
+        
         setState(() {
           _isLoading = false;
         });
+        
         if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const Dashboard()),
-          );
+          if (hasSettings) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const Dashboard()),
+            );
+          } else {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => PropertySettingsScreen(
+                  volunteerUac: _mockAccessCode,
+                  volunteerName: _mockVolunteerName,
+                  isFirstTimeSetup: true,
+                ),
+              ),
+            );
+          }
         }
         return;
       }
@@ -61,11 +81,29 @@ class LoginPageState extends State<LoginPage> {
           await prefs.setString('uac', _accessCodeController.text.trim());
           await prefs.setString('volunteer_name', response['name']);
 
+          // Check if volunteer has configured property settings
+          final hasSettings = await PropertyValidationService.hasConfiguredSettings();
+
           if (mounted) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const Dashboard()),
-            );
+            if (hasSettings) {
+              // Go directly to dashboard
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const Dashboard()),
+              );
+            } else {
+              // Redirect to property settings screen for first-time setup
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PropertySettingsScreen(
+                    volunteerUac: _accessCodeController.text.trim(),
+                    volunteerName: response['name'],
+                    isFirstTimeSetup: true,
+                  ),
+                ),
+              );
+            }
           }
         } else {
           if (mounted) {

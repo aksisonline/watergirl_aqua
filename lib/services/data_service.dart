@@ -402,6 +402,274 @@ class DataService {
     return propertyValues;
   }
 
+  /// Update attendance with interim leave functionality
+  Future<void> updateAttendanceWithInterimLeave({
+    required String attendeeId,
+    required String slotId,
+    required bool isPresent,
+    required bool isInterimLeave,
+  }) async {
+    if (_offlineService.isOnline) {
+      try {
+        // Try to update immediately
+        await _updateAttendanceWithInterimLeaveOnServer(
+          attendeeId, 
+          slotId, 
+          isPresent, 
+          isInterimLeave
+        );
+        
+        // Update local state immediately
+        _updateLocalAttendanceStateWithInterimLeave(
+          attendeeId, 
+          slotId, 
+          isPresent, 
+          isInterimLeave
+        );
+        
+      } catch (e) {
+        print('Error updating interim leave attendance on server: $e');
+        // Queue for later sync
+        await _offlineService.queueAttendanceChangeWithInterimLeave(
+          attendeeId: attendeeId,
+          slotId: slotId,
+          attendanceBool: isPresent,
+          isInterimLeave: isInterimLeave,
+        );
+        
+        // Update local state optimistically
+        _updateLocalAttendanceStateWithInterimLeave(
+          attendeeId, 
+          slotId, 
+          isPresent, 
+          isInterimLeave
+        );
+      }
+    } else {
+      // Queue for later sync when offline
+      await _offlineService.queueAttendanceChangeWithInterimLeave(
+        attendeeId: attendeeId,
+        slotId: slotId,
+        attendanceBool: isPresent,
+        isInterimLeave: isInterimLeave,
+      );
+      
+      // Update local state optimistically
+      _updateLocalAttendanceStateWithInterimLeave(
+        attendeeId, 
+        slotId, 
+        isPresent, 
+        isInterimLeave
+      );
+    }
+  }
+
+  /// Update attendance with interim leave on server
+  Future<void> _updateAttendanceWithInterimLeaveOnServer(
+    String attendeeId, 
+    String slotId, 
+    bool isPresent, 
+    bool isInterimLeave
+  ) async {
+    // Get current attendance data
+    final currentData = await _supabase
+        .from('attendee_details')
+        .select('attendee_attendance')
+        .eq('attendee_internal_uid', attendeeId)
+        .single();
+
+    List<dynamic> attendance = [];
+    if (currentData['attendee_attendance'] != null) {
+      attendance = json.decode(currentData['attendee_attendance']);
+    }
+
+    // Update or add attendance for current slot with interim leave info
+    final existingIndex = attendance.indexWhere(
+      (a) => a['slot_id'].toString() == slotId,
+    );
+
+    final now = DateTime.now();
+    final attendanceRecord = {
+      'slot_id': slotId,
+      'attendance_bool': isPresent,
+      'interim_leave': isInterimLeave,
+      'out_time': isInterimLeave ? now.toIso8601String() : null,
+      'expected_return_time': isInterimLeave 
+          ? now.add(const Duration(minutes: 10)).toIso8601String() 
+          : null,
+      'actual_return_time': null,
+    };
+
+    if (existingIndex >= 0) {
+      attendance[existingIndex] = attendanceRecord;
+    } else {
+      attendance.add(attendanceRecord);
+    }
+
+    // Update in database
+    await _supabase
+        .from('attendee_details')
+        .update({'attendee_attendance': json.encode(attendance)})
+        .eq('attendee_internal_uid', attendeeId);
+  }
+
+  /// Update local attendance state with interim leave optimistically
+  void _updateLocalAttendanceStateWithInterimLeave(
+    String attendeeId, 
+    String slotId, 
+    bool isPresent, 
+    bool isInterimLeave
+  ) {
+    final attendeeIndex = _attendees.indexWhere(
+      (a) => a['attendee_internal_uid'] == attendeeId,
+    );
+    
+    if (attendeeIndex >= 0) {
+      final attendee = Map<String, dynamic>.from(_attendees[attendeeIndex]);
+      
+      List<dynamic> attendance = [];
+      if (attendee['attendee_attendance'] != null) {
+        if (attendee['attendee_attendance'] is String) {
+          attendance = json.decode(attendee['attendee_attendance']);
+        } else {
+          attendance = List.from(attendee['attendee_attendance']);
+        }
+      }
+
+      // Update or add attendance for current slot
+      final existingIndex = attendance.indexWhere(
+        (a) => a['slot_id'].toString() == slotId,
+      );
+
+      final now = DateTime.now();
+      final attendanceRecord = {
+        'slot_id': slotId,
+        'attendance_bool': isPresent,
+        'interim_leave': isInterimLeave,
+        'out_time': isInterimLeave ? now.toIso8601String() : null,
+        'expected_return_time': isInterimLeave 
+            ? now.add(const Duration(minutes: 10)).toIso8601String() 
+            : null,
+        'actual_return_time': null,
+      };
+
+      if (existingIndex >= 0) {
+        attendance[existingIndex] = attendanceRecord;
+      } else {
+        attendance.add(attendanceRecord);
+      }
+
+      attendee['attendee_attendance'] = json.encode(attendance);
+      _attendees[attendeeIndex] = attendee;
+      
+      // Notify listeners
+      _attendeesStream.add(_attendees);
+    }
+  }
+
+  /// Update attendance to mark return from interim leave
+  Future<void> updateAttendanceReturn({
+    required String attendeeId,
+    required String slotId,
+  }) async {
+    if (_offlineService.isOnline) {
+      try {
+        // Try to update immediately
+        await _updateAttendanceReturnOnServer(attendeeId, slotId);
+        
+        // Update local state immediately
+        _updateLocalAttendanceStateReturn(attendeeId, slotId);
+        
+      } catch (e) {
+        print('Error updating return on server: $e');
+        // Queue for later sync
+        await _offlineService.queueAttendanceReturn(
+          attendeeId: attendeeId,
+          slotId: slotId,
+        );
+        
+        // Update local state optimistically
+        _updateLocalAttendanceStateReturn(attendeeId, slotId);
+      }
+    } else {
+      // Queue for later sync when offline
+      await _offlineService.queueAttendanceReturn(
+        attendeeId: attendeeId,
+        slotId: slotId,
+      );
+      
+      // Update local state optimistically
+      _updateLocalAttendanceStateReturn(attendeeId, slotId);
+    }
+  }
+
+  /// Update attendance return on server
+  Future<void> _updateAttendanceReturnOnServer(String attendeeId, String slotId) async {
+    // Get current attendance data
+    final currentData = await _supabase
+        .from('attendee_details')
+        .select('attendee_attendance')
+        .eq('attendee_internal_uid', attendeeId)
+        .single();
+
+    List<dynamic> attendance = [];
+    if (currentData['attendee_attendance'] != null) {
+      attendance = json.decode(currentData['attendee_attendance']);
+    }
+
+    // Find and update the attendance record for the current slot
+    final existingIndex = attendance.indexWhere(
+      (a) => a['slot_id'].toString() == slotId,
+    );
+
+    if (existingIndex >= 0) {
+      attendance[existingIndex]['actual_return_time'] = DateTime.now().toIso8601String();
+      attendance[existingIndex]['interim_leave'] = false; // Mark as returned
+
+      // Update in database
+      await _supabase
+          .from('attendee_details')
+          .update({'attendee_attendance': json.encode(attendance)})
+          .eq('attendee_internal_uid', attendeeId);
+    }
+  }
+
+  /// Update local attendance state for return
+  void _updateLocalAttendanceStateReturn(String attendeeId, String slotId) {
+    final attendeeIndex = _attendees.indexWhere(
+      (a) => a['attendee_internal_uid'] == attendeeId,
+    );
+    
+    if (attendeeIndex >= 0) {
+      final attendee = Map<String, dynamic>.from(_attendees[attendeeIndex]);
+      
+      List<dynamic> attendance = [];
+      if (attendee['attendee_attendance'] != null) {
+        if (attendee['attendee_attendance'] is String) {
+          attendance = json.decode(attendee['attendee_attendance']);
+        } else {
+          attendance = List.from(attendee['attendee_attendance']);
+        }
+      }
+
+      // Find and update the attendance record for the current slot
+      final existingIndex = attendance.indexWhere(
+        (a) => a['slot_id'].toString() == slotId,
+      );
+
+      if (existingIndex >= 0) {
+        attendance[existingIndex]['actual_return_time'] = DateTime.now().toIso8601String();
+        attendance[existingIndex]['interim_leave'] = false; // Mark as returned
+
+        attendee['attendee_attendance'] = json.encode(attendance);
+        _attendees[attendeeIndex] = attendee;
+        
+        // Notify listeners
+        _attendeesStream.add(_attendees);
+      }
+    }
+  }
+
   /// Clear all cached data
   Future<void> clearCache() async {
     await _offlineService.clearCache();

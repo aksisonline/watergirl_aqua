@@ -11,6 +11,8 @@ import '../register/property_editor.dart';
 import '../../services/data_service.dart';
 import 'package:flutter/widgets.dart';
 import '../../services/camera_service.dart';
+import '../../services/property_validation_service.dart';
+import '../../services/notification_service.dart';
 
 // Conditional import for Windows camera
 import 'package:camera/camera.dart' as camera_package;
@@ -52,6 +54,10 @@ class QRScannerPageState extends State<QRScannerPage> {
   Timer? _cooldownTimer;
   String? _lastScannedQR;
 
+  // Interim leave functionality
+  bool _showInterimLeaveOptions = false;
+  String _currentScannedUid = '';
+
   Future<void> searchDatabase(String scannedData) async {
     if (_lastScannedQR == scannedData) {
       print('Same QR scanned, ignoring duplicate...');
@@ -71,6 +77,23 @@ class QRScannerPageState extends State<QRScannerPage> {
 
     _startScanCooldown(scanBuffer);
 
+    // Validate property settings before proceeding
+    final validationResult = await PropertyValidationService.validateBeforeScan(scannedData);
+    if (!validationResult.isValid) {
+      if (validationResult.conflicts.isNotEmpty) {
+        _showPropertyConflictDialog(scannedData, validationResult.conflicts);
+        return;
+      } else if (validationResult.message != null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(validationResult.message!)),
+          );
+        }
+        _resetForNextScan();
+        return;
+      }
+    }
+
     final cachedAttendees = _dataService.attendees;
     final data = cachedAttendees.firstWhere(
       (a) => a['attendee_internal_uid'] == scannedData,
@@ -80,10 +103,14 @@ class QRScannerPageState extends State<QRScannerPage> {
     if (data.isNotEmpty) {
       setState(() {
         attendeeData = data;
+        _currentScannedUid = scannedData;
+        _showInterimLeaveOptions = qrMode == 'attendance' && currentSlot != null;
+        
         if (data.isNotEmpty) {
           _checkCurrentAttendance();
 
-          if (isSlotActive && qrMode == 'attendance' && currentSlot != null) {
+          // Only auto-mark if not showing interim leave options
+          if (isSlotActive && qrMode == 'attendance' && currentSlot != null && !_showInterimLeaveOptions) {
             _autoMarkAttendance();
           }
         }
@@ -98,10 +125,14 @@ class QRScannerPageState extends State<QRScannerPage> {
 
         setState(() {
           attendeeData = serverData ?? {};
+          _currentScannedUid = scannedData;
+          _showInterimLeaveOptions = qrMode == 'attendance' && currentSlot != null && serverData != null;
+          
           if (serverData != null) {
             _checkCurrentAttendance();
 
-            if (isSlotActive && qrMode == 'attendance' && currentSlot != null) {
+            // Only auto-mark if not showing interim leave options
+            if (isSlotActive && qrMode == 'attendance' && currentSlot != null && !_showInterimLeaveOptions) {
               _autoMarkAttendance();
             }
           }
@@ -111,11 +142,13 @@ class QRScannerPageState extends State<QRScannerPage> {
         _startScanCooldown(_scanBufferError);
         setState(() {
           attendeeData = {};
+          _showInterimLeaveOptions = false;
         });
       }
     } else {
       setState(() {
         attendeeData = {};
+        _showInterimLeaveOptions = false;
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -205,7 +238,190 @@ class QRScannerPageState extends State<QRScannerPage> {
     _cooldownTimer?.cancel();
     setState(() {
       isScanning = true;
+      _showInterimLeaveOptions = false;
+      _currentScannedUid = '';
     });
+  }
+
+  // Property conflict resolution dialog
+  void _showPropertyConflictDialog(String attendeeId, List<PropertyConflict> conflicts) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Property Conflict Detected'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('The attendee already has different properties set:'),
+            const SizedBox(height: 16),
+            ...conflicts.map((conflict) => 
+              _buildConflictItem(conflict)
+            ).toList(),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _resetForNextScan();
+            },
+            child: const Text('Go Back to Settings'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(context).pop();
+              // Continue with overriding the properties
+              await _continueWithPropertyOverride(attendeeId);
+            },
+            child: const Text('Continue Anyway'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConflictItem(PropertyConflict conflict) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Text(
+            '${conflict.propertyName}: ',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          Text('${conflict.existingValue} → ${conflict.newValue}'),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _continueWithPropertyOverride(String attendeeId) async {
+    try {
+      final volunteerSettings = await PropertyValidationService.getVolunteerSettings();
+      await PropertyValidationService.updateAttendeeProperties(attendeeId, volunteerSettings);
+      
+      // Continue with normal scanning process
+      await searchDatabase(attendeeId);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error updating properties: $e')),
+        );
+      }
+      _resetForNextScan();
+    }
+  }
+
+  // Handle regular attendance marking
+  Future<void> _handleRegularAttendance() async {
+    if (attendeeData.isEmpty || currentSlot == null) return;
+
+    final uid = attendeeData['attendee_internal_uid'];
+    if (uid == null) return;
+
+    try {
+      await _dataService.updateAttendance(
+        attendeeId: uid,
+        slotId: currentSlot!['slot_id'].toString(),
+        isPresent: true,
+      );
+
+      _updateQueuedChangesCount();
+
+      if (mounted) {
+        setState(() {
+          isPresent = true;
+          _showInterimLeaveOptions = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_isOnline
+                ? 'Attendance marked as Present'
+                : 'Attendance queued for sync when online'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+
+        Future.delayed(const Duration(milliseconds: 1500), () {
+          if (mounted) {
+            _resetForNextScan();
+          }
+        });
+      }
+    } catch (e) {
+      print('Error marking regular attendance: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error marking attendance: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // Handle interim leave
+  Future<void> _handleInterimLeave() async {
+    if (attendeeData.isEmpty || currentSlot == null) return;
+
+    final uid = attendeeData['attendee_internal_uid'];
+    if (uid == null) return;
+
+    try {
+      // Mark as present with interim leave flag
+      await _dataService.updateAttendanceWithInterimLeave(
+        attendeeId: uid,
+        slotId: currentSlot!['slot_id'].toString(),
+        isPresent: true,
+        isInterimLeave: true,
+      );
+
+      _updateQueuedChangesCount();
+
+      if (mounted) {
+        setState(() {
+          isPresent = true;
+          _showInterimLeaveOptions = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_isOnline
+                ? 'Marked as Present on Interim Leave'
+                : 'Interim leave queued for sync when online'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+
+        // Show notification about the interim leave
+        await NotificationService.showNotification(
+          title: 'Interim Leave Started',
+          body: '${attendeeData['attendee_name']} is now on interim leave',
+          payload: 'interim_start:$uid',
+        );
+
+        Future.delayed(const Duration(milliseconds: 1500), () {
+          if (mounted) {
+            _resetForNextScan();
+          }
+        });
+      }
+    } catch (e) {
+      print('Error marking interim leave: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error marking interim leave: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   void _checkCurrentAttendance() {
@@ -314,6 +530,7 @@ class QRScannerPageState extends State<QRScannerPage> {
     try {
       await _cameraService.initialize();
       await _dataService.initialize();
+      await NotificationService.initialize();
 
       // Initialize mobile scanner for non-Windows platforms
       if (!_cameraService.isWindowsPlatform) {
@@ -415,7 +632,7 @@ class QRScannerPageState extends State<QRScannerPage> {
     return int.parse(parts[0]) * 60 + int.parse(parts[1]);
   }
 
-  Widget _buildCameraWidget(bool isWebOrDesktop) {
+ Widget _buildCameraWidget(bool isWebOrDesktop) {
     if (isWebOrDesktop && !_cameraService.isWindowsPlatform) {
       return Container(
         color: Colors.grey[300],
@@ -442,9 +659,28 @@ class QRScannerPageState extends State<QRScannerPage> {
       );
     } else if (_cameraService.isWindowsPlatform) {
       if (_cameraService.currentController?.value.isInitialized ?? false) {
-        return AspectRatio(
-          aspectRatio: _cameraService.currentController!.value.aspectRatio,
-          child: camera_package.CameraPreview(_cameraService.currentController!),
+        return GestureDetector(
+          onTapUp: (details) {
+            // Same logic as in search.dart
+            final Offset tapPosition = details.localPosition;
+            final RenderBox renderBox = context.findRenderObject() as RenderBox;
+            // It's crucial that the RenderBox is from the CameraPreview itself
+            // or a widget that has the exact same size and position as the CameraPreview.
+            // If the GestureDetector wraps a parent widget that is larger than the preview,
+            // the coordinates will be off.
+            final Offset localOffset = renderBox.globalToLocal(tapPosition);
+
+            final double x = localOffset.dx / renderBox.size.width;
+            final double y = localOffset.dy / renderBox.size.height;
+
+            if (x >= 0.0 && x <= 1.0 && y >= 0.0 && y <= 1.0) {
+               _cameraService.setFocusPoint(Offset(x,y));
+            }
+          },
+          child: AspectRatio(
+            aspectRatio: _cameraService.currentController!.value.aspectRatio,
+            child: camera_package.CameraPreview(_cameraService.currentController!),
+          ),
         );
       } else {
         return Container(
@@ -466,8 +702,9 @@ class QRScannerPageState extends State<QRScannerPage> {
         );
       }
     } else {
+      // MobileScanner for other platforms
       if (controller == null) {
-        return Center(
+        return const Center(
           child: CircularProgressIndicator(),
         );
       }
@@ -855,12 +1092,12 @@ class QRScannerPageState extends State<QRScannerPage> {
             Container(
               width: deviceWidth,
               padding: EdgeInsets.all(isLargeScreen ? safePadding * 1.5 : safePadding),
-              child: attendeeData!.isNotEmpty
+              child: attendeeData.isNotEmpty
               ? Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Name: ${attendeeData!['attendee_name'] ?? 'Unknown'}',
+                    'Name: ${attendeeData['attendee_name'] ?? 'Unknown'}',
                     style: TextStyle(fontSize: isLargeScreen ? 20 : 18),
                   ),
                   SizedBox(height: isLargeScreen ? safePadding * 1.5 : safePadding),
@@ -887,60 +1124,92 @@ class QRScannerPageState extends State<QRScannerPage> {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      if (qrMode == 'attendance' && isSlotActive && currentSlot != null)
-                        Container(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: isLargeScreen ? 24 : 16,
-                            vertical: isLargeScreen ? 16 : 12,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.green[100],
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.green),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.check_circle, color: Colors.green, size: isLargeScreen ? 20 : 18),
-                              const SizedBox(width: 8),
-                              Text(
-                                'Auto-marked as Present',
-                                style: TextStyle(
-                                  fontSize: isLargeScreen ? 16 : 14,
-                                  color: Colors.green[800],
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                      if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
-                        ElevatedButton(
-                          onPressed: () {
-                            setState(() {
-                              isPresent = !isPresent;
-                            });
-                          },
+                      // Interim leave action buttons (when options are shown)
+                      if (_showInterimLeaveOptions && qrMode == 'attendance' && currentSlot != null) ...[
+                        ElevatedButton.icon(
+                          onPressed: _handleRegularAttendance,
+                          icon: const Icon(Icons.check_circle, size: 18),
+                          label: const Text('Mark Present'),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
                             padding: EdgeInsets.symmetric(
                               horizontal: isLargeScreen ? 24 : 16,
                               vertical: isLargeScreen ? 16 : 12,
                             ),
                           ),
-                          child: Text(
-                            isPresent ? 'Present' : 'Absent',
-                            style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: _handleInterimLeave,
+                          icon: const Icon(Icons.access_time, size: 18),
+                          label: const Text('Interim Leave'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: isLargeScreen ? 24 : 16,
+                              vertical: isLargeScreen ? 16 : 12,
+                            ),
                           ),
                         ),
+                      ]
+                      // Regular action buttons (when interim leave options are not shown)
+                      else ...[
+                        if (qrMode == 'attendance' && isSlotActive && currentSlot != null)
+                          Container(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: isLargeScreen ? 24 : 16,
+                              vertical: isLargeScreen ? 16 : 12,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.green[100],
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.green),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.check_circle, color: Colors.green, size: isLargeScreen ? 20 : 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Auto-marked as Present',
+                                  style: TextStyle(
+                                    fontSize: isLargeScreen ? 16 : 14,
+                                    color: Colors.green[800],
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                        if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
+                          ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                isPresent = !isPresent;
+                              });
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: isPresent ? Colors.teal : Colors.deepOrangeAccent,
+                              padding: EdgeInsets.symmetric(
+                                horizontal: isLargeScreen ? 24 : 16,
+                                vertical: isLargeScreen ? 16 : 12,
+                              ),
+                            ),
+                            child: Text(
+                              isPresent ? 'Present' : 'Absent',
+                              style: TextStyle(fontSize: isLargeScreen ? 16 : 14),
+                            ),
+                          ),
+                      ],
 
                       ElevatedButton(
                         onPressed: () async {
                           await Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => AttendeeProfilePage(attendee: attendeeData!),
+                              builder: (context) => AttendeeProfilePage(attendee: attendeeData),
                             ),
                           );
                         },
@@ -962,7 +1231,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                             await Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) => PropertyEditorPage(attendee: attendeeData!),
+                                builder: (context) => PropertyEditorPage(attendee: attendeeData),
                               ),
                             );
                           },
@@ -982,7 +1251,7 @@ class QRScannerPageState extends State<QRScannerPage> {
                           ),
                         ),
 
-                      if (qrMode == 'attendance' && !isSlotActive && currentSlot != null)
+                      if (qrMode == 'attendance' && !isSlotActive && currentSlot != null && !_showInterimLeaveOptions)
                         ElevatedButton(
                           onPressed: () {
                             updateCheckInOut(uid, isPresent);

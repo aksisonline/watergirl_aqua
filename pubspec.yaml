@@ -46,6 +46,10 @@ dependencies:
   # Camera support for cross-platform including Windows
   camera: ^0.11.0
   flutter_svg: ^2.0.10
+  # Local notifications for interim leave alerts
+  flutter_local_notifications: ^18.0.1
+  permission_handler: ^11.3.1
+  timezone: ^0.10.1
 
 dev_dependencies:
   flutter_test:
