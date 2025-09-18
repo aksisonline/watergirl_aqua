@@ -25,6 +25,7 @@ class DataService {
   List<Map<String, dynamic>> _slots = [];
   Map<String, dynamic>? _currentSlot;
   bool _isInitialized = false;
+  Timer? _periodicSyncTimer;
   
   // Getters for streams
   Stream<List<Map<String, dynamic>>> get attendeesStream => _attendeesStream.stream;
@@ -61,6 +62,9 @@ class DataService {
     
     // Load initial data (from cache if offline, from server if online)
     await _loadInitialData();
+    
+    // Start periodic sync every 15 seconds
+    _startPeriodicSync();
     
     _isInitialized = true;
   }
@@ -670,6 +674,68 @@ class DataService {
     }
   }
 
+  /// Start periodic sync every 15 seconds
+  void _startPeriodicSync() {
+    _periodicSyncTimer?.cancel(); // Cancel any existing timer
+    _periodicSyncTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
+      if (_offlineService.isOnline) {
+        _syncAllData();
+      }
+    });
+  }
+
+  /// Stop periodic sync
+  void _stopPeriodicSync() {
+    _periodicSyncTimer?.cancel();
+    _periodicSyncTimer = null;
+  }
+
+  /// Update attendee UID after QR registration
+  Future<void> updateAttendeeUID({
+    required String attendeeId,
+    required String uid,
+  }) async {
+    if (_offlineService.isOnline) {
+      try {
+        // Update on server immediately
+        await _supabase
+            .from('attendee_details')
+            .update({'attendee_internal_uid': uid})
+            .eq('id', attendeeId);
+        
+        // Update local state immediately
+        _updateLocalAttendeeUID(attendeeId, uid);
+        
+      } catch (e) {
+        print('Error updating attendee UID on server: $e');
+        // Still update local state optimistically
+        _updateLocalAttendeeUID(attendeeId, uid);
+      }
+    } else {
+      // Update local state when offline
+      _updateLocalAttendeeUID(attendeeId, uid);
+    }
+  }
+
+  /// Update local attendee UID state
+  void _updateLocalAttendeeUID(String attendeeId, String uid) {
+    final attendeeIndex = _attendees.indexWhere(
+      (a) => a['id']?.toString() == attendeeId,
+    );
+    
+    if (attendeeIndex >= 0) {
+      final attendee = Map<String, dynamic>.from(_attendees[attendeeIndex]);
+      attendee['attendee_internal_uid'] = uid;
+      _attendees[attendeeIndex] = attendee;
+      
+      // Cache the updated data
+      _offlineService.cacheAttendees(_attendees);
+      
+      // Notify listeners
+      _attendeesStream.add(_attendees);
+    }
+  }
+
   /// Clear all cached data
   Future<void> clearCache() async {
     await _offlineService.clearCache();
@@ -685,6 +751,7 @@ class DataService {
 
   /// Dispose resources
   void dispose() {
+    _stopPeriodicSync();
     _attendeesStream.close();
     _propertiesStream.close();
     _slotsStream.close();

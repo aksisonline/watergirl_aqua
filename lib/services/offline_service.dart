@@ -447,8 +447,8 @@ class OfflineService {
   void _startPeriodicSync() {
     _stopPeriodicSync(); // Stop any existing timer
     
-    // Sync every 30 seconds when online
-    _syncTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+    // Sync every 15 seconds when online (as specified in requirements)
+    _syncTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
       if (_isOnline) {
         _syncQueuedData();
       }

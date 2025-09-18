@@ -48,6 +48,9 @@ class _DashboardState extends State<Dashboard> {
       QRScannerPage(key: qrScannerKey), // Use the GlobalKey here
       const SettingsScreen(),
     ];
+    
+    // Initialize DataService for dashboard-level operations
+    _dataService.initialize();
   }
 
   void _onItemTapped(int index) {
@@ -55,23 +58,8 @@ class _DashboardState extends State<Dashboard> {
       _selectedIndex = index;
       _updateAppBarTitle(); // Update title when tab changes
     });
-    // Refresh attendee list when switching to Register tab
-    if (index == 0) {
-      // ...refresh attendee list if needed...
-    }
-    // Refresh search page when switching to Search tab
-    if (index == 1) {
-      if (searchPageKey.currentState != null) {
-        searchPageKey.currentState!.refreshData();
-      } else {
-        // If not yet built, schedule refresh after build
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (searchPageKey.currentState != null) {
-            searchPageKey.currentState!.refreshData();
-          }
-        });
-      }
-    }
+    // Note: Removed manual refresh calls since components now use DataService streams
+    // Components will automatically update when data changes
   }
 
   void _updateAppBarTitle() {
@@ -139,7 +127,7 @@ class _DashboardState extends State<Dashboard> {
   void _reloadCurrentPage() async {
     if (!mounted) return; // Check if the widget is still mounted
 
-    // Use DataService for efficient refresh instead of full page reload
+    // Use DataService for efficient component-based refresh instead of full page reload
     try {
       await _dataService.refreshData();
       
@@ -148,12 +136,22 @@ class _DashboardState extends State<Dashboard> {
         _updateAppBarTitle();
       }
       
-      // Refresh QR camera if needed
+      // Refresh QR camera if needed (this is the only UI-specific refresh needed)
       if (_selectedIndex == 2) {
         final qrPageState = qrScannerKey.currentState;
         if (qrPageState != null && qrPageState.mounted) {
           qrPageState.refreshCamera();
         }
+      }
+      
+      // Show success feedback
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Data refreshed successfully'),
+            duration: Duration(seconds: 2),
+          ),
+        );
       }
     } catch (e) {
       print('Error refreshing data: $e');

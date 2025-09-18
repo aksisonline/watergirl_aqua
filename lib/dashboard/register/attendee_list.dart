@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // For platform detection
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'qr_register.dart';
+import '../../services/data_service.dart';
 
 class AttendeeListNoUIDPage extends StatefulWidget {
   const AttendeeListNoUIDPage({super.key});
@@ -17,30 +18,82 @@ class AttendeeListNoUIDPage extends StatefulWidget {
 class AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
   final SupabaseClient supabase = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
+  final DataService _dataService = DataService();
   List<Map<String, dynamic>> attendees = [];
   List<Map<String, dynamic>> _originalAttendees = []; // Store the original list here
   bool _isLoading = false;
+  bool _isOnline = true;
+  int _queuedChanges = 0;
 
-  Future<void> fetchAttendeesWithoutUID() async {
+  Future<void> initializeDataService() async {
     setState(() {
       _isLoading = true;
     });
-  final data = await supabase.from('attendee_details').select('id, attendee_internal_uid, attendee_name, attendee_properties, attendee_attendance');
 
-    if (!mounted) return; // Check if the widget is still mounted
+    try {
+      await _dataService.initialize();
+      
+      // Listen to attendee data changes
+      _dataService.attendeesStream.listen((attendeeData) {
+        if (mounted) {
+          setState(() {
+            _originalAttendees = attendeeData;
+            _filterAttendees(_searchController.text);
+            _isLoading = false;
+          });
+        }
+      });
+      
+      // Listen to connection status changes
+      _dataService.connectionStatusStream.listen((isOnline) {
+        if (mounted) {
+          setState(() {
+            _isOnline = isOnline;
+          });
+          _updateQueuedChangesCount();
+        }
+      });
+      
+      // Initialize data if not loaded yet
+      if (_dataService.attendees.isNotEmpty) {
+        setState(() {
+          _originalAttendees = _dataService.attendees;
+          _filterAttendees(_searchController.text);
+          _isLoading = false;
+        });
+      }
+      
+      _updateQueuedChangesCount();
+      
+    } catch (e) {
+      print('Error initializing data service: $e');
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
-    setState(() {
-      _originalAttendees = List<Map<String, dynamic>>.from(data); // Save original data
-      attendees = List<Map<String, dynamic>>.from(_originalAttendees); // Set filtered data
-      _sortAttendees();
-      _isLoading = false;
-    });
+  Future<void> _updateQueuedChangesCount() async {
+    final count = await _dataService.getQueuedChangesCount();
+    if (mounted) {
+      setState(() {
+        _queuedChanges = count;
+      });
+    }
+  }
+
+  Future<void> fetchAttendeesWithoutUID() async {
+    // This method is now replaced by DataService streams
+    // Keep for backward compatibility but delegate to refresh
+    await _dataService.refreshData();
   }
 
   @override
   void initState() {
     super.initState();
-    fetchAttendeesWithoutUID();
+    initializeDataService();
   }
 
   @override
@@ -65,24 +118,45 @@ class AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
   }
 
   Future<void> _updateAttendeeUID(Map<String, dynamic> attendee) async {
-    final index = attendees.indexOf(attendee);
-    if (index != -1) {
-      final response = await supabase.from('attendee_details').select('attendee_internal_uid').eq('attendee_internal_uid', attendees[index]['attendee_internal_uid']).single();
-      setState(() {
-        attendees[index]['attendee_internal_uid'] = response['attendee_internal_uid']; // Update the UID here
-        _sortAttendees();
-      });
-    }
+    // This method is now handled by DataService streams
+    // The UI will automatically update when the stream emits new data
+    // No need to manually refresh individual attendees
   }
 
   Future<void> refreshList() async {
-    await fetchAttendeesWithoutUID();
+    await _dataService.refreshData();
   }
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // Sync status indicator
+        if (!_isOnline || _queuedChanges > 0)
+          Container(
+            width: double.infinity,
+            color: _isOnline ? Colors.orange.shade100 : Colors.red.shade100,
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+            child: Row(
+              children: [
+                Icon(
+                  _isOnline ? Icons.sync : Icons.sync_disabled,
+                  size: 16,
+                  color: _isOnline ? Colors.orange : Colors.red,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _isOnline 
+                    ? (_queuedChanges > 0 ? 'Syncing $_queuedChanges changes...' : 'Online')
+                    : 'Offline - $_queuedChanges changes pending',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _isOnline ? Colors.orange.shade800 : Colors.red.shade800,
+                  ),
+                ),
+              ],
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.all(16.0),
           child: TextField(
@@ -132,10 +206,13 @@ class AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
                     await Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => QRRegisterPage(attendee: attendeeWithId),
+                        builder: (context) => QRRegisterPage(
+                          attendee: attendeeWithId,
+                          dataService: _dataService, // Pass DataService to QRRegisterPage
+                        ),
                       ),
                     );
-                    await _updateAttendeeUID(attendee); // Update the specific attendee
+                    // No need to call _updateAttendeeUID anymore as DataService handles this
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: uidExists ? Colors.grey : Colors.blue,

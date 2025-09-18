@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'property_editor.dart';
+import '../../services/data_service.dart';
 
 class QRRegisterPage extends StatefulWidget {
   final Map<String, dynamic> attendee;
+  final DataService? dataService;
 
-  const QRRegisterPage({super.key, required this.attendee});
+  const QRRegisterPage({super.key, required this.attendee, this.dataService});
 
   @override
   State<QRRegisterPage> createState() => _QRRegisterPageState();
@@ -15,6 +17,7 @@ class QRRegisterPage extends StatefulWidget {
 class _QRRegisterPageState extends State<QRRegisterPage> {
   final SupabaseClient supabase = Supabase.instance.client;
   late MobileScannerController controller;
+  late DataService _dataService;
   String scannedData = 'No data scanned yet';
   bool torchOn = false;
   bool _isLoading = false;
@@ -54,11 +57,11 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
           const SnackBar(content: Text('This QR is already registered to another attendee.')),
         );
       } else {
-        // Update the UID for the current attendee
-        await supabase
-            .from('attendee_details')
-            .update({'attendee_internal_uid': uid})
-            .eq('id', widget.attendee['id']); // Use primary key 'id' to identify the record
+        // Use DataService to update UID (handles both online/offline scenarios)
+        await _dataService.updateAttendeeUID(
+          attendeeId: widget.attendee['id'].toString(),
+          uid: uid,
+        );
 
         setState(() {
           widget.attendee['attendee_internal_uid'] = uid;
@@ -127,6 +130,7 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
   void initState() {
     super.initState();
     controller = MobileScannerController();
+    _dataService = widget.dataService ?? DataService();
   }
 
   @override
