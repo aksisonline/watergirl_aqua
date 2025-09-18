@@ -25,7 +25,7 @@ class AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
     setState(() {
       _isLoading = true;
     });
-    final data = await supabase.from('attendee_details').select('attendee_internal_uid, attendee_name, attendee_properties, attendee_attendance');
+  final data = await supabase.from('attendee_details').select('id, attendee_internal_uid, attendee_name, attendee_properties, attendee_attendance');
 
     if (!mounted) return; // Check if the widget is still mounted
 
@@ -116,10 +116,23 @@ class AttendeeListNoUIDPageState extends State<AttendeeListNoUIDPage> {
                   onPressed: uidExists
                       ? null
                       : () async {
+                    // Ensure attendee map contains 'id' key for QRRegisterPage
+                    final attendeeWithId = Map<String, dynamic>.from(attendee);
+                    if (!attendeeWithId.containsKey('id')) {
+                      // Try to fetch the id if missing (should not happen, but fallback)
+                      final response = await supabase
+                          .from('attendee_details')
+                          .select('id')
+                          .eq('attendee_internal_uid', attendee['attendee_internal_uid'])
+                          .maybeSingle();
+                      if (response != null && response['id'] != null) {
+                        attendeeWithId['id'] = response['id'];
+                      }
+                    }
                     await Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => QRRegisterPage(attendee: attendee),
+                        builder: (context) => QRRegisterPage(attendee: attendeeWithId),
                       ),
                     );
                     await _updateAttendeeUID(attendee); // Update the specific attendee

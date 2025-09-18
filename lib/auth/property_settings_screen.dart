@@ -153,6 +153,13 @@ class PropertySettingsScreenState extends State<PropertySettingsScreen> {
     }
   }
 
+  Future<void> _skipSetup() async {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const Dashboard()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -297,7 +304,27 @@ class PropertySettingsScreenState extends State<PropertySettingsScreen> {
                     // Action Buttons
                     Row(
                       children: [
-                        if (!widget.isFirstTimeSetup) ...[
+                        if (widget.isFirstTimeSetup) ...[
+                          Expanded(
+                            child: TextButton(
+                              onPressed: _isSaving ? null : _skipSetup,
+                              child: const Text('Skip'),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: _isSaving ? null : _saveSettings,
+                              child: _isSaving
+                                  ? const SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Text('Continue'),
+                            ),
+                          ),
+                        ] else ...[
                           Expanded(
                             child: OutlinedButton(
                               onPressed: _isSaving ? null : () => Navigator.pop(context),
@@ -305,19 +332,19 @@ class PropertySettingsScreenState extends State<PropertySettingsScreen> {
                             ),
                           ),
                           const SizedBox(width: 16),
-                        ],
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: _isSaving ? null : _saveSettings,
-                            child: _isSaving
-                                ? const SizedBox(
-                                    height: 20,
-                                    width: 20,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : Text(widget.isFirstTimeSetup ? 'Continue' : 'Save Settings'),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: _isSaving ? null : _saveSettings,
+                              child: _isSaving
+                                  ? const SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Text('Save Settings'),
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                     

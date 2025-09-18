@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -148,28 +149,48 @@ class PropertyValidationService {
     try {
       final supabase = Supabase.instance.client;
       
-      // Fetch distinct buildings and rooms from properties table
+      // Fetch building and room properties from properties table
       final response = await supabase
           .from('properties')
-          .select('team_name, building, room');
+          .select('property_name, property_options')
+          .inFilter('property_name', ['building', 'room']);
 
-      if (response == null) return {'buildings': [], 'rooms': []};
+      if (response.isEmpty) return {'buildings': [], 'rooms': []};
 
-      final buildings = <String>{};
-      final rooms = <String>{};
+      final buildings = <String>[];
+      final rooms = <String>[];
 
       for (final property in response) {
-        if (property['building'] != null) {
-          buildings.add(property['building'].toString());
-        }
-        if (property['room'] != null) {
-          rooms.add(property['room'].toString());
+        final propertyName = property['property_name'] as String;
+        final propertyOptions = property['property_options'] as String;
+
+        if (propertyName == 'building') {
+          // Parse comma-separated building options
+          buildings.addAll(
+            propertyOptions.split(',').map((b) => b.trim()).where((b) => b.isNotEmpty)
+          );
+        } else if (propertyName == 'room') {
+          // Parse room options - could be JSON or comma-separated
+          try {
+            // Try parsing as JSON first (new nested format)
+            final roomsByBuilding = jsonDecode(propertyOptions) as Map<String, dynamic>;
+            for (final buildingRooms in roomsByBuilding.values) {
+              if (buildingRooms is List) {
+                rooms.addAll((buildingRooms as List).map((r) => r.toString()));
+              }
+            }
+          } catch (e) {
+            // Fallback to comma-separated format (old format)
+            rooms.addAll(
+              propertyOptions.split(',').map((r) => r.trim()).where((r) => r.isNotEmpty)
+            );
+          }
         }
       }
 
       return {
-        'buildings': buildings.toList()..sort(),
-        'rooms': rooms.toList()..sort(),
+        'buildings': buildings.toSet().toList()..sort(),
+        'rooms': rooms.toSet().toList()..sort(),
       };
     } catch (e) {
       print('Error fetching available properties: $e');
@@ -184,19 +205,31 @@ class PropertyValidationService {
       
       final response = await supabase
           .from('properties')
-          .select('room')
-          .eq('building', building);
+          .select('property_options')
+          .eq('property_name', 'room')
+          .single();
 
       if (response == null) return [];
 
-      final rooms = <String>{};
-      for (final property in response) {
-        if (property['room'] != null) {
-          rooms.add(property['room'].toString());
-        }
-      }
+      final propertyOptions = response['property_options'] as String;
 
-      return rooms.toList()..sort();
+      try {
+        // Try parsing as JSON first (new nested format)
+        final roomsByBuilding = jsonDecode(propertyOptions) as Map<String, dynamic>;
+        
+        if (roomsByBuilding.containsKey(building)) {
+          final buildingRooms = roomsByBuilding[building];
+          if (buildingRooms is List) {
+            return (buildingRooms as List).map((r) => r.toString()).toList()..sort();
+          }
+        }
+        return [];
+      } catch (e) {
+        // Fallback: if JSON parsing fails, return empty list 
+        // (old comma-separated format doesn't support building associations)
+        print('Error parsing room JSON for building $building: $e');
+        return [];
+      }
     } catch (e) {
       print('Error fetching rooms for building: $e');
       return [];

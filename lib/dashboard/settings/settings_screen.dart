@@ -450,13 +450,13 @@ class SettingsScreenState extends State<SettingsScreen> {
           children: [
             Row(
               children: [
-                Icon(icon, color: Theme.of(context).primaryColor),
+                Icon(icon, color: Colors.white),
                 const SizedBox(width: 8),
                 Text(
                   title,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Theme.of(context).primaryColor,
+                    color: Colors.white,
                   ),
                 ),
               ],

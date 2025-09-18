@@ -22,6 +22,20 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
 
   Future<void> updateUID(String uid) async {
     if (!mounted) return;
+
+    if (widget.attendee['id'] == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Error: Attendee ID is missing. Cannot assign QR.')),
+        );
+        setState(() {
+          _isLoading = false;
+          isScanning = true;
+        });
+      }
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });
@@ -31,19 +45,20 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
           .from('attendee_details')
           .select()
           .eq('attendee_internal_uid', uid)
+          .neq('id', widget.attendee['id']) // Ensure it's not the current user's existing QR
           .maybeSingle();
 
       if (existingUID != null) {
-        // UID already exists
+        // UID already exists and belongs to another attendee
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('This QR is already registered to another attendee.')),
         );
       } else {
-        // Update the UID
+        // Update the UID for the current attendee
         await supabase
             .from('attendee_details')
             .update({'attendee_internal_uid': uid})
-            .eq('attendee_internal_uid', widget.attendee['attendee_internal_uid']);
+            .eq('id', widget.attendee['id']); // Use primary key 'id' to identify the record
 
         setState(() {
           widget.attendee['attendee_internal_uid'] = uid;
@@ -53,34 +68,37 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
           const SnackBar(content: Text('QR assigned successfully.')),
         );
 
-        // Show option to fill properties
-        _showPropertyDialog();
+        // Show option to fill properties and then navigate back
+        _showPropertyDialogAndPop();
       }
     } finally {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          isScanning = true; // Resume scanning after updating UID
+          isScanning = true; // Resume scanning after updating UID or if dialog is cancelled
         });
       }
     }
   }
 
-  void _showPropertyDialog() {
+  void _showPropertyDialogAndPop() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog( // Use dialogContext for dialog's own pop
         title: const Text('Fill Properties'),
         content: const Text('Would you like to fill in the attendee properties now?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () {
+              Navigator.of(dialogContext).pop(); // Close dialog
+              Navigator.of(context).pop(); // Close QRRegisterPage
+            },
             child: const Text('Skip'),
           ),
           TextButton(
             onPressed: () {
-              Navigator.of(context).pop();
-              _navigateToPropertyEditor();
+              Navigator.of(dialogContext).pop(); // Close dialog
+              _navigateToPropertyEditorAndPop();
             },
             child: const Text('Fill Now'),
           ),
@@ -89,17 +107,19 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
     );
   }
 
-  void _navigateToPropertyEditor() async {
-    final result = await Navigator.push(
+  void _navigateToPropertyEditorAndPop() async {
+    // Navigate to PropertyEditorPage
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => PropertyEditorPage(attendee: widget.attendee),
       ),
     );
     
-    if (result == true) {
-      // Properties were saved, we can navigate back or refresh
-      Navigator.pop(context);
+    // After PropertyEditorPage is closed (by saving or navigating back),
+    // pop the QRRegisterPage, if it's still mounted.
+    if (mounted) {
+      Navigator.of(context).pop();
     }
   }
 
@@ -208,7 +228,16 @@ class _QRRegisterPageState extends State<QRRegisterPage> {
                           child: const Text('Assign QR'),
                         ),
                         ElevatedButton(
-                          onPressed: () => _navigateToPropertyEditor(),
+                          onPressed: () {
+                            // Navigate to property editor but don't pop this page yet,
+                            // as QR is not yet assigned.
+                             Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => PropertyEditorPage(attendee: widget.attendee),
+                              ),
+                            );
+                          },
                           child: const Text('Edit Properties'),
                         ),
                       ],
