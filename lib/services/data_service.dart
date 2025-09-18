@@ -93,8 +93,9 @@ class DataService {
 
   /// Load data from server and cache it
   Future<void> _loadFromServer() async {
-    // Load attendees
-    final attendeesData = await _supabase.from('attendee_details').select('*');
+    // Load attendees with all required fields
+    final attendeesData = await _supabase.from('attendee_details')
+        .select('id, attendee_internal_uid, attendee_name, attendee_properties, attendee_attendance');
     _attendees = List<Map<String, dynamic>>.from(attendeesData);
     await _offlineService.cacheAttendees(_attendees);
     _attendeesStream.add(_attendees);
