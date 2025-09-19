@@ -25,7 +25,6 @@ class _DashboardState extends State<Dashboard> {
   late int _selectedIndex;
   String _appBarTitle = 'Register Page'; // Start with proper initial title
   final GlobalKey<QRScannerPageState> qrScannerKey = GlobalKey<QRScannerPageState>();
-  final GlobalKey<SearchPageState> searchPageKey = GlobalKey<SearchPageState>();
   final DataService _dataService = DataService();
   late List<Widget> _widgetOptions;
 
@@ -44,7 +43,7 @@ class _DashboardState extends State<Dashboard> {
     _updateAppBarTitle(); // Update title on init
     _widgetOptions = <Widget>[
       const AttendeeListNoUIDPage(),
-      SearchPage(key: searchPageKey),
+      const SearchPage(),
       QRScannerPage(key: qrScannerKey), // Use the GlobalKey here
       const SettingsScreen(),
     ];
@@ -58,19 +57,6 @@ class _DashboardState extends State<Dashboard> {
     // Refresh attendee list when switching to Register tab
     if (index == 0) {
       // ...refresh attendee list if needed...
-    }
-    // Refresh search page when switching to Search tab
-    if (index == 1) {
-      if (searchPageKey.currentState != null) {
-        searchPageKey.currentState!.refreshData();
-      } else {
-        // If not yet built, schedule refresh after build
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (searchPageKey.currentState != null) {
-            searchPageKey.currentState!.refreshData();
-          }
-        });
-      }
     }
   }
 
@@ -109,31 +95,51 @@ class _DashboardState extends State<Dashboard> {
 
   bool _isTimeInRange(String currentTime, String timeFrame) {
     try {
+      print('Dashboard: _isTimeInRange - currentTime: "$currentTime", timeFrame: "$timeFrame"');
+      
       final parts = timeFrame.split('-');
-      if (parts.length != 2) return false;
+      if (parts.length != 2) {
+        print('Dashboard: Invalid timeFrame format, parts.length = ${parts.length}');
+        return false;
+      }
       
       final startTime = parts[0].trim();
       final endTime = parts[1].trim();
+      print('Dashboard: startTime: "$startTime", endTime: "$endTime"');
       
       final current = _timeToMinutes(currentTime);
       final start = _timeToMinutes(startTime);
       final end = _timeToMinutes(endTime);
       
-      return current >= start && current <= end;
+      print('Dashboard: current: $current minutes, start: $start minutes, end: $end minutes');
+      
+      final isInRange = current >= start && current <= end;
+      print('Dashboard: Time is in range: $isInRange');
+      
+      return isInRange;
     } catch (e) {
+      print('Dashboard: Error in _isTimeInRange: $e');
       return false;
     }
   }
 
   int _timeToMinutes(String time) {
-    final parts = time.split(':');
-    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
-  }
-
-  Future<void> _fetchAppBarTitle() async {
-    // This method is now handled by _updateAppBarTitle
-    // Keep it for backwards compatibility but make it call the new method
-    _updateAppBarTitle();
+    try {
+      print('Dashboard: Converting time "$time" to minutes');
+      final parts = time.split(':');
+      if (parts.length != 2) {
+        print('Dashboard: Invalid time format: "$time"');
+        return 0;
+      }
+      final hours = int.parse(parts[0]);
+      final minutes = int.parse(parts[1]);
+      final totalMinutes = hours * 60 + minutes;
+      print('Dashboard: "$time" = $totalMinutes minutes');
+      return totalMinutes;
+    } catch (e) {
+      print('Dashboard: Error parsing time "$time": $e');
+      return 0;
+    }
   }
 
   void _reloadCurrentPage() async {
@@ -244,7 +250,7 @@ class _DashboardState extends State<Dashboard> {
               maxWidth: isWebOrDesktop ? 1200 : double.infinity,
             ),
             child: SizedBox(
-              height: isLargeScreen ? heightBottomNavigationBar + 10 : heightBottomNavigationBar,
+              height: isLargeScreen ? heightBottomNavigationBar + 15 : heightBottomNavigationBar + 5,
               child: BottomNavigationBar(
                 elevation: 0,
                 // backgroundColor: Colors.black26,

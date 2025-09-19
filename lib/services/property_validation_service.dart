@@ -96,15 +96,20 @@ class PropertyValidationService {
     try {
       final supabase = Supabase.instance.client;
       
-      // Query the attendees table for existing properties
+      // Query the attendee_details table for existing properties
       final response = await supabase
-          .from('attendees')
-          .select('properties')
-          .eq('attendee_id', attendeeId)
+          .from('attendee_details')
+          .select('attendee_properties')
+          .eq('attendee_internal_uid', attendeeId)
           .maybeSingle();
 
-      if (response != null && response['properties'] != null) {
-        return Map<String, dynamic>.from(response['properties']);
+      if (response != null && response['attendee_properties'] != null) {
+        // Handle both JSON object and JSON string cases
+        if (response['attendee_properties'] is String) {
+          return json.decode(response['attendee_properties']);
+        } else {
+          return Map<String, dynamic>.from(response['attendee_properties']);
+        }
       }
       
       return {};
@@ -121,24 +126,31 @@ class PropertyValidationService {
   ) {
     final conflicts = <PropertyConflict>[];
 
-    // Check building conflict
-    if (existingProperties['building'] != null && 
-        existingProperties['building'] != volunteerSettings['building']) {
-      conflicts.add(PropertyConflict(
-        propertyName: 'Building',
-        existingValue: existingProperties['building'].toString(),
-        newValue: volunteerSettings['building'] ?? '',
-      ));
+    // Check building conflict (trigger if value changes, or if one is empty/non-empty)
+    final existingBuilding = (existingProperties['building'] ?? '').toString();
+    final newBuilding = (volunteerSettings['building'] ?? '').toString();
+    if (existingBuilding != newBuilding) {
+      // Trigger conflict if either is empty and the other is not, or if values differ
+      if (existingBuilding.isEmpty != newBuilding.isEmpty || existingBuilding != newBuilding) {
+        conflicts.add(PropertyConflict(
+          propertyName: 'Building',
+          existingValue: existingBuilding,
+          newValue: newBuilding,
+        ));
+      }
     }
 
-    // Check room conflict
-    if (existingProperties['room'] != null && 
-        existingProperties['room'] != volunteerSettings['room']) {
-      conflicts.add(PropertyConflict(
-        propertyName: 'Room',
-        existingValue: existingProperties['room'].toString(),
-        newValue: volunteerSettings['room'] ?? '',
-      ));
+    // Check room conflict (trigger if value changes, or if one is empty/non-empty)
+    final existingRoom = (existingProperties['room'] ?? '').toString();
+    final newRoom = (volunteerSettings['room'] ?? '').toString();
+    if (existingRoom != newRoom) {
+      if (existingRoom.isEmpty != newRoom.isEmpty || existingRoom != newRoom) {
+        conflicts.add(PropertyConflict(
+          propertyName: 'Room',
+          existingValue: existingRoom,
+          newValue: newRoom,
+        ));
+      }
     }
 
     return conflicts;
@@ -252,11 +264,11 @@ class PropertyValidationService {
       updatedProperties['building'] = volunteerSettings['building'];
       updatedProperties['room'] = volunteerSettings['room'];
       
-      // Update the database
+      // Update the database using correct table and column names
       await supabase
-          .from('attendees')
-          .update({'properties': updatedProperties})
-          .eq('attendee_id', attendeeId);
+          .from('attendee_details')
+          .update({'attendee_properties': updatedProperties})
+          .eq('attendee_internal_uid', attendeeId);
 
       return true;
     } catch (e) {

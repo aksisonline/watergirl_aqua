@@ -29,7 +29,7 @@ void main() async {
     await OfflineService().initialize();
     await DataService().initialize();
   } catch (e) {
-    print('Error initializing offline services: $e');
+    // print('Error initializing offline services: $e');
     // Continue with app launch even if offline services fail
   }
 
@@ -220,6 +220,13 @@ class MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   foregroundColor: WidgetStateProperty.all(Colors.black),
                 ),
               ),
+              scaffoldBackgroundColor: Colors.white,
+              // scaffoldTheme: const ScaffoldThemeData( // ERROR: 'scaffoldTheme' isn't defined for ThemeData.copyWith
+              //   body: Padding( // ERROR: ScaffoldThemeData does not have 'body'
+              //     padding: EdgeInsets.only(bottom: 80), // Adjust as needed for nav bar height
+              //     child: null,
+              //   ),
+              // ),
             ),
             darkTheme: ThemeData.dark(
               useMaterial3: true,
@@ -229,6 +236,12 @@ class MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   foregroundColor: WidgetStateProperty.all(Colors.white),
                 ),
               ),
+              // scaffoldTheme: const ScaffoldThemeData( // ERROR: 'scaffoldTheme' isn't defined for ThemeData.copyWith
+              //   body: Padding( // ERROR: ScaffoldThemeData does not have 'body'
+              //     padding: EdgeInsets.only(bottom: 80),
+              //     child: null,
+              //   ),
+              // ),
             ),
 
             debugShowCheckedModeBanner: false,

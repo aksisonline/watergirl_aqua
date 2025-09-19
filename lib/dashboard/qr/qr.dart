@@ -29,6 +29,46 @@ class QRScannerPage extends StatefulWidget {
 }
 
 class QRScannerPageState extends State<QRScannerPage> {
+  // Helper to check if attendee is on interim leave for the current or last slot
+  bool _isAttendeeOnInterimLeave() {
+    final attendanceData = attendeeData['attendee_attendance'];
+    List attendance = [];
+    if (attendanceData != null) {
+      if (attendanceData is String) {
+        final decoded = json.decode(attendanceData);
+        if (decoded is List) {
+          attendance = decoded;
+        } else if (decoded is Map && decoded.isEmpty) {
+          attendance = [];
+        }
+      } else if (attendanceData is List) {
+        attendance = attendanceData;
+      } else if (attendanceData is Map && attendanceData.isEmpty) {
+        attendance = [];
+      }
+    }
+    // Find the most recent slot record (active or not)
+    Map? slotAttendance;
+    if (currentSlot != null) {
+      slotAttendance = attendance.firstWhere(
+        (a) => a['slot_id'].toString() == currentSlot!['slot_id'].toString(),
+        orElse: () => null,
+      );
+    }
+    // If not found, check the last attendance record
+    slotAttendance ??= attendance.isNotEmpty ? attendance.last : null;
+    if (slotAttendance != null) {
+      final interimLeave = slotAttendance['interim_leave'];
+      if (interimLeave == true) {
+        return true;
+      }
+      // Handle nested interim_leave object (e.g., { is_on_leave: true })
+      if (interimLeave is Map && interimLeave['is_on_leave'] == true) {
+        return true;
+      }
+    }
+    return false;
+  }
   final SupabaseClient supabase = Supabase.instance.client;
   final DataService _dataService = DataService();
   final CameraService _cameraService = CameraService();
@@ -104,15 +144,40 @@ class QRScannerPageState extends State<QRScannerPage> {
       setState(() {
         attendeeData = data;
         _currentScannedUid = scannedData;
-        _showInterimLeaveOptions = qrMode == 'attendance' && currentSlot != null;
-        
-        if (data.isNotEmpty) {
-          _checkCurrentAttendance();
+        _checkCurrentAttendance();
 
-          // Only auto-mark if not showing interim leave options
-          if (isSlotActive && qrMode == 'attendance' && currentSlot != null && !_showInterimLeaveOptions) {
-            _autoMarkAttendance();
+        // Determine interim leave status
+        final onInterimLeave = _isAttendeeOnInterimLeave();
+
+        // Show interim leave options only if:
+        // - Slot is inactive and attendee is on interim leave or not present
+        // - Slot is active and attendee is on interim leave (to allow unflagging)
+        if (currentSlot != null) {
+          if (!isSlotActive) {
+            _showInterimLeaveOptions = onInterimLeave || !isPresent;
+          } else {
+            _showInterimLeaveOptions = onInterimLeave;
           }
+        } else {
+          _showInterimLeaveOptions = false;
+        }
+
+        print('QR: Attendance marking conditions check:');
+        print('  - isSlotActive: $isSlotActive');
+        print('  - qrMode: $qrMode');
+        print('  - currentSlot: ${currentSlot != null ? currentSlot!['slot_name'] : 'null'}');
+        print('  - _showInterimLeaveOptions: $_showInterimLeaveOptions');
+
+        // Only auto-mark if not showing interim leave options
+        if (isSlotActive && qrMode == 'attendance' && currentSlot != null && !_showInterimLeaveOptions) {
+          print('QR: All conditions met, calling _autoMarkAttendance()');
+          _autoMarkAttendance();
+        } else {
+          print('QR: Conditions not met for auto-marking attendance. Reasons:');
+          if (!isSlotActive) print('  - isSlotActive is false');
+          if (qrMode != 'attendance') print('  - qrMode is not "attendance" (actual: $qrMode)');
+          if (currentSlot == null) print('  - currentSlot is null');
+          if (_showInterimLeaveOptions) print('  - _showInterimLeaveOptions is true');
         }
       });
     } else if (_isOnline) {
@@ -180,18 +245,28 @@ class QRScannerPageState extends State<QRScannerPage> {
 
   Future<void> _autoMarkAttendance() async {
     if (attendeeData.isEmpty || currentSlot == null) {
+      print('QR: _autoMarkAttendance early return - attendeeData.isEmpty: ${attendeeData.isEmpty}, currentSlot: ${currentSlot == null ? 'null' : 'exists'}');
       return;
     }
 
     final uid = attendeeData['attendee_internal_uid'];
-    if (uid == null) return;
+    if (uid == null) {
+      print('QR: _autoMarkAttendance early return - uid is null');
+      return;
+    }
+
+    print('QR: _autoMarkAttendance starting for UID: $uid, Slot: ${currentSlot!['slot_name']}');
 
     try {
-      await _dataService.updateAttendance(
+      // Mark attendance and clear interim leave if present
+      final result = await _dataService.updateAttendance(
         attendeeId: uid,
         slotId: currentSlot!['slot_id'].toString(),
         isPresent: true,
       );
+      // TODO: Ensure backend/data_service clears interim leave flag when marking present
+
+      print('QR: _autoMarkAttendance - updateAttendance call completed successfully, conflict: ${result.wasConflict}');
 
       _updateQueuedChangesCount();
 
@@ -321,7 +396,7 @@ class QRScannerPageState extends State<QRScannerPage> {
     if (uid == null) return;
 
     try {
-      await _dataService.updateAttendance(
+      final result = await _dataService.updateAttendance(
         attendeeId: uid,
         slotId: currentSlot!['slot_id'].toString(),
         isPresent: true,
@@ -335,12 +410,19 @@ class QRScannerPageState extends State<QRScannerPage> {
           _showInterimLeaveOptions = false;
         });
 
+        // Show appropriate message based on result
+        Color snackBarColor = Colors.green;
+        String message = _isOnline ? 'Attendance marked as Present' : 'Attendance queued for sync when online';
+        
+        if (result.wasConflict) {
+          snackBarColor = Colors.orange;
+          message = result.message;
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(_isOnline
-                ? 'Attendance marked as Present'
-                : 'Attendance queued for sync when online'),
-            backgroundColor: Colors.green,
+            content: Text(message),
+            backgroundColor: snackBarColor,
             duration: const Duration(seconds: 2),
           ),
         );
@@ -432,15 +514,25 @@ class QRScannerPageState extends State<QRScannerPage> {
 
     try {
       final attendanceData = attendeeData['attendee_attendance'];
+      List attendance = [];
       if (attendanceData != null) {
-        final attendance = json.decode(attendanceData) as List;
+        if (attendanceData is String) {
+          final decoded = json.decode(attendanceData);
+          if (decoded is List) {
+            attendance = decoded;
+          } else if (decoded is Map && decoded.isEmpty) {
+            attendance = [];
+          }
+        } else if (attendanceData is List) {
+          attendance = attendanceData;
+        } else if (attendanceData is Map && attendanceData.isEmpty) {
+          attendance = [];
+        }
         final currentSlotId = currentSlot!['slot_id'].toString();
-
         final slotAttendance = attendance.firstWhere(
           (a) => a['slot_id'].toString() == currentSlotId,
           orElse: () => null,
         );
-
         isPresent = slotAttendance?['attendance_bool'] == true;
       } else {
         isPresent = false;
@@ -455,7 +547,7 @@ class QRScannerPageState extends State<QRScannerPage> {
     if (!mounted || currentSlot == null) return;
 
     try {
-      await _dataService.updateAttendance(
+      final result = await _dataService.updateAttendance(
         attendeeId: uid,
         slotId: currentSlot!['slot_id'].toString(),
         isPresent: newValue,
@@ -469,15 +561,22 @@ class QRScannerPageState extends State<QRScannerPage> {
         });
       }
 
-      final message = _isOnline
+      String message = _isOnline
           ? 'Attendance updated successfully'
           : 'Attendance queued for sync when online';
+      
+      Color snackBarColor = _isOnline ? Colors.green : Colors.orange;
+      
+      if (result.wasConflict) {
+        message = result.message;
+        snackBarColor = Colors.orange;
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(message),
-            backgroundColor: _isOnline ? Colors.green : Colors.orange,
+            backgroundColor: snackBarColor,
           ),
         );
       }
@@ -548,6 +647,10 @@ class QRScannerPageState extends State<QRScannerPage> {
 
       _dataService.slotsStream.listen((slots) {
         if (mounted) {
+          print('QR: Slots loaded from stream - count: ${slots.length}');
+          slots.forEach((slot) {
+            print('  - ${slot['slot_name']}: ${slot['slot_time_frame']}');
+          });
           setState(() {
             _allSlots = slots;
           });
@@ -571,24 +674,32 @@ class QRScannerPageState extends State<QRScannerPage> {
   }
 
   void _updateCurrentSlotFromSlots(List<Map<String, dynamic>> slots) {
+    print('QR: _updateCurrentSlotFromSlots called with ${slots.length} slots');
     final now = DateTime.now();
     final currentTime = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    print('QR: Current time: $currentTime');
 
     Map<String, dynamic>? activeSlot;
     for (final slot in slots) {
       final timeFrame = slot['slot_time_frame'] as String;
+      print('QR: Checking slot ${slot['slot_name']} with timeframe: $timeFrame');
       if (_isTimeInRange(currentTime, timeFrame)) {
+        print('QR: Slot ${slot['slot_name']} is ACTIVE');
         activeSlot = slot;
         break;
+      } else {
+        print('QR: Slot ${slot['slot_name']} is INACTIVE');
       }
     }
 
     setState(() {
       if (activeSlot != null) {
+        print('QR: Setting active slot: ${activeSlot['slot_name']}');
         isSlotActive = true;
         currentSlot = activeSlot;
         qrMode = 'attendance';
       } else {
+        print('QR: No active slot found');
         isSlotActive = false;
         // Don't nullify currentSlot if it was manually selected
         if (currentSlot == null && _allSlots.isNotEmpty) {
@@ -597,6 +708,7 @@ class QRScannerPageState extends State<QRScannerPage> {
         }
         qrMode = currentSlot != null ? 'attendance' : 'profile';
       }
+      print('QR: Final state - isSlotActive: $isSlotActive, qrMode: $qrMode');
     });
   }
 
@@ -611,25 +723,51 @@ class QRScannerPageState extends State<QRScannerPage> {
 
   bool _isTimeInRange(String currentTime, String timeFrame) {
     try {
+      print('QR: _isTimeInRange - currentTime: "$currentTime", timeFrame: "$timeFrame"');
+      
       final parts = timeFrame.split('-');
-      if (parts.length != 2) return false;
+      if (parts.length != 2) {
+        print('QR: Invalid timeFrame format, parts.length = ${parts.length}');
+        return false;
+      }
 
       final startTime = parts[0].trim();
       final endTime = parts[1].trim();
+      print('QR: startTime: "$startTime", endTime: "$endTime"');
 
       final current = _timeToMinutes(currentTime);
       final start = _timeToMinutes(startTime);
       final end = _timeToMinutes(endTime);
 
-      return current >= start && current <= end;
+      print('QR: current: $current minutes, start: $start minutes, end: $end minutes');
+      
+      final isInRange = current >= start && current <= end;
+      print('QR: Time is in range: $isInRange');
+      
+      return isInRange;
     } catch (e) {
+      print('QR: Error in _isTimeInRange: $e');
       return false;
     }
   }
 
   int _timeToMinutes(String time) {
-    final parts = time.split(':');
-    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+    try {
+      print('QR: Converting time "$time" to minutes');
+      final parts = time.split(':');
+      if (parts.length != 2) {
+        print('QR: Invalid time format: "$time"');
+        return 0;
+      }
+      final hours = int.parse(parts[0]);
+      final minutes = int.parse(parts[1]);
+      final totalMinutes = hours * 60 + minutes;
+      print('QR: "$time" = $totalMinutes minutes');
+      return totalMinutes;
+    } catch (e) {
+      print('QR: Error parsing time "$time": $e');
+      return 0;
+    }
   }
 
  Widget _buildCameraWidget(bool isWebOrDesktop) {
@@ -762,44 +900,44 @@ class QRScannerPageState extends State<QRScannerPage> {
         padding: EdgeInsets.all(isLargeScreen ? 24.0 : 16.0),
         child: Column(
           children: [
-            // Connection Status and Sync Info
-            if (!_isOnline || _queuedChanges > 0)
-              Card(
-                color: _isOnline ? Colors.orange[100] : Colors.red[100],
-                margin: EdgeInsets.only(bottom: isLargeScreen ? 16.0 : 8.0),
-                child: Padding(
-                  padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
-                  child: Row(
-                    children: [
-                      Icon(
-                        _isOnline ? Icons.sync : Icons.cloud_off,
-                        color: _isOnline ? Colors.orange : Colors.red,
-                        size: isLargeScreen ? 24 : 20,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _isOnline ? 'Syncing...' : 'Offline',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: isLargeScreen ? 14 : 12,
-                              ),
-                            ),
-                            if (_queuedChanges > 0)
-                              Text(
-                                '$_queuedChanges changes queued',
-                                style: TextStyle(fontSize: isLargeScreen ? 10 : 8),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            // // Connection Status and Sync Info
+            // if (!_isOnline || _queuedChanges > 0)
+            //   Card(
+            //     color: _isOnline ? Colors.orange[100] : Colors.red[100],
+            //     margin: EdgeInsets.only(bottom: isLargeScreen ? 16.0 : 8.0),
+            //     child: Padding(
+            //       padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+            //       child: Row(
+            //         children: [
+            //           Icon(
+            //             _isOnline ? Icons.sync : Icons.cloud_off,
+            //             color: _isOnline ? Colors.orange : Colors.red,
+            //             size: isLargeScreen ? 24 : 20,
+            //           ),
+            //           const SizedBox(width: 8),
+            //           Expanded(
+            //             child: Column(
+            //               crossAxisAlignment: CrossAxisAlignment.start,
+            //               children: [
+            //                 Text(
+            //                   _isOnline ? 'Syncing...' : 'Offline',
+            //                   style: TextStyle(
+            //                     fontWeight: FontWeight.bold,
+            //                     fontSize: isLargeScreen ? 14 : 12,
+            //                   ),
+            //                 ),
+            //                 if (_queuedChanges > 0)
+            //                   Text(
+            //                     '$_queuedChanges changes queued',
+            //                     style: TextStyle(fontSize: isLargeScreen ? 10 : 8),
+            //                   ),
+            //               ],
+            //             ),
+            //           ),
+            //         ],
+            //       ),
+            //     ),
+            //   ),
 
             // Mode Toggle (always show, not just for large screens)
             Card(
@@ -1012,34 +1150,34 @@ class QRScannerPageState extends State<QRScannerPage> {
 
             SizedBox(height: isLargeScreen ? 24 : 16),
 
-            // Scan Cooldown Indicator
-            if (_scanCooldownSeconds > 0)
-              Card(
-                color: isSlotActive && qrMode == 'attendance' ? Colors.green[100] : Colors.amber[100],
-                child: Padding(
-                  padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        isSlotActive && qrMode == 'attendance' ? Icons.check_circle : Icons.timer,
-                        color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        isSlotActive && qrMode == 'attendance'
-                            ? 'Attendance marked! Next scan in $_scanCooldownSeconds seconds'
-                            : 'Next scan available in $_scanCooldownSeconds seconds',
-                        style: TextStyle(
-                          color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
-                          fontWeight: FontWeight.w500,
-                          fontSize: isLargeScreen ? 16 : 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            // // Scan Cooldown Indicator
+            // if (_scanCooldownSeconds > 0)
+            //   Card(
+            //     color: isSlotActive && qrMode == 'attendance' ? Colors.green[100] : Colors.amber[100],
+            //     child: Padding(
+            //       padding: EdgeInsets.all(isLargeScreen ? 12.0 : 8.0),
+            //       child: Row(
+            //         mainAxisAlignment: MainAxisAlignment.center,
+            //         children: [
+            //           Icon(
+            //             isSlotActive && qrMode == 'attendance' ? Icons.check_circle : Icons.timer,
+            //             color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
+            //           ),
+            //           const SizedBox(width: 8),
+            //           Text(
+            //             isSlotActive && qrMode == 'attendance'
+            //                 ? 'Attendance marked! Next scan in $_scanCooldownSeconds seconds'
+            //                 : 'Next scan available in $_scanCooldownSeconds seconds',
+            //             style: TextStyle(
+            //               color: isSlotActive && qrMode == 'attendance' ? Colors.green[800] : Colors.amber[800],
+            //               fontWeight: FontWeight.w500,
+            //               fontSize: isLargeScreen ? 16 : 14,
+            //             ),
+            //           ),
+            //         ],
+            //       ),
+            //     ),
+            //   ),
 
             Container(
               height: isLargeScreen ? 400 : 300,
@@ -1247,6 +1385,26 @@ class QRScannerPageState extends State<QRScannerPage> {
                             style: TextStyle(
                               fontSize: isLargeScreen ? 16 : 14,
                               color: Colors.white,
+                            ),
+                          ),
+                        ),
+
+                      // Button to toggle interim leave options
+                      if (qrMode == 'attendance' && currentSlot != null && !_showInterimLeaveOptions && !isSlotActive)
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _showInterimLeaveOptions = true;
+                            });
+                          },
+                          icon: const Icon(Icons.schedule, size: 18),
+                          label: const Text('Interim Leave'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: isLargeScreen ? 24 : 16,
+                              vertical: isLargeScreen ? 16 : 12,
                             ),
                           ),
                         ),
