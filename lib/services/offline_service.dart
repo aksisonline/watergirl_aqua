@@ -336,7 +336,11 @@ class OfflineService {
 
   /// Sync queued attendance data with server
   Future<void> _syncQueuedData() async {
-    if (!_isOnline || !_isInitialized) return;
+    if (!_isOnline || !_isInitialized) {
+      print('OfflineService: _syncQueuedData called but not online or not initialized. Online: $_isOnline, Initialized: $_isInitialized');
+      return;
+    }
+    print('OfflineService: _syncQueuedData running');
     
     try {
       // Get unsynced attendance changes
@@ -347,11 +351,14 @@ class OfflineService {
         orderBy: 'timestamp ASC',
       );
       
+      print('OfflineService: Queued changes count: ${queuedChanges.length}');
+      
       if (queuedChanges.isEmpty) return;
       
       // Process each queued change
       for (final change in queuedChanges) {
         try {
+          print('OfflineService: Syncing queued change id: ${change['id']}');
           await _syncAttendanceChange(change);
           
           // Mark as synced
@@ -361,6 +368,8 @@ class OfflineService {
             where: 'id = ?',
             whereArgs: [change['id']],
           );
+          
+          print('OfflineService: Marked change id ${change['id']} as synced');
         } catch (e) {
           print('Error syncing attendance change ${change['id']}: $e');
           // Continue with next change
@@ -370,6 +379,8 @@ class OfflineService {
       // Update last sync time
       await _prefs.setInt(_lastSyncKey, DateTime.now().millisecondsSinceEpoch);
       
+      print('OfflineService: Finished syncing queued changes');
+      
     } catch (e) {
       print('Error during sync: $e');
     }
@@ -377,6 +388,8 @@ class OfflineService {
 
   /// Sync individual attendance change
   Future<void> _syncAttendanceChange(Map<String, dynamic> change) async {
+    print('OfflineService: _syncAttendanceChange for attendeeId: ${change['attendee_id']}, slotId: ${change['slot_id']}, attendanceBool: ${change['attendance_bool']}');
+    
     final attendeeId = change['attendee_id'] as String;
     final slotId = change['slot_id'] as String;
     final attendanceBool = change['attendance_bool'] == 1;
@@ -388,9 +401,19 @@ class OfflineService {
         .eq('attendee_internal_uid', attendeeId)
         .single();
 
+    print('OfflineService: Raw attendance data from DB: ${currentData['attendee_attendance']} (type: ${currentData['attendee_attendance'].runtimeType})');
+
     List<dynamic> attendance = [];
     if (currentData['attendee_attendance'] != null) {
-      attendance = json.decode(currentData['attendee_attendance']);
+      print('OfflineService: Processing attendance data...');
+      if (currentData['attendee_attendance'] is String) {
+        print('OfflineService: Decoding JSON string...');
+        attendance = json.decode(currentData['attendee_attendance']);
+      } else if (currentData['attendee_attendance'] is List) {
+        print('OfflineService: Using existing List...');
+        attendance = List.from(currentData['attendee_attendance']);
+      }
+      print('OfflineService: Final attendance: $attendance');
     }
 
     // Update or add attendance for the slot
@@ -398,22 +421,44 @@ class OfflineService {
       (a) => a['slot_id'].toString() == slotId,
     );
 
+    print('OfflineService: Existing index: $existingIndex');
+
     if (existingIndex >= 0) {
+      print('OfflineService: Updating existing record at index $existingIndex');
       attendance[existingIndex]['attendance_bool'] = attendanceBool;
+      print('OfflineService: Updated existing attendance record for slot ${change['slot_id']}');
     } else {
+      print('OfflineService: Adding new attendance record');
       attendance.add({
         'slot_id': slotId,
         'attendance_bool': attendanceBool,
       });
+      print('OfflineService: Added new attendance record for slot ${change['slot_id']}');
     }
 
-    // Update in database
-    await _supabase
-        .from('attendee_details')
-        .update({'attendee_attendance': json.encode(attendance)})
-        .eq('attendee_internal_uid', attendeeId);
-    
-    // Update local cache
+    print('OfflineService: About to update database with attendance: ${json.encode(attendance)}');
+    print('OfflineService: Attendance type: ${attendance.runtimeType}');
+    print('OfflineService: Attendance content: $attendance');
+
+    // Always encode attendance as JSON string for DB update
+    try {
+      final updateData = {'attendee_attendance': attendance}; // Don't double-encode, let Supabase handle it
+      print('OfflineService: Updating DB with: $updateData');
+      
+      await _supabase
+          .from('attendee_details')
+          .update(updateData)
+          .eq('attendee_internal_uid', attendeeId);
+      
+      print('OfflineService: Database update successful');
+    } catch (e) {
+      print('OfflineService: Database update failed: $e');
+      rethrow;
+    }
+
+    print('OfflineService: Updated attendee_attendance in DB for ${change['attendee_id']}');
+
+    // Update local cache (can keep as List)
     await _updateLocalAttendeeData(attendeeId, attendance);
   }
 
@@ -447,8 +492,11 @@ class OfflineService {
   void _startPeriodicSync() {
     _stopPeriodicSync(); // Stop any existing timer
     
+    print('OfflineService: Starting periodic sync timer');
+    
     // Sync every 30 seconds when online
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      print('OfflineService: Periodic sync timer fired. Online: $_isOnline');
       if (_isOnline) {
         _syncQueuedData();
       }

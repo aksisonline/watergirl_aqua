@@ -591,21 +591,45 @@ class DataService {
     print('DataService: updateAttendance called - attendeeId: $attendeeId, slotId: $slotId, isPresent: $isPresent');
     print('DataService: Current online status: ${_offlineService.isOnline}');
     
+    // Check local cache: if already present, do not queue or update
+    final attendeeIndex = _attendees.indexWhere((a) => a['attendee_internal_uid'] == attendeeId);
+    bool alreadyPresent = false;
+    if (attendeeIndex >= 0) {
+      final attendee = Map<String, dynamic>.from(_attendees[attendeeIndex]);
+      List<dynamic> attendance = [];
+      if (attendee['attendee_attendance'] != null) {
+        if (attendee['attendee_attendance'] is String) {
+          attendance = json.decode(attendee['attendee_attendance']);
+        } else if (attendee['attendee_attendance'] is List) {
+          attendance = List.from(attendee['attendee_attendance']);
+        }
+      }
+      final existingIndex = attendance.indexWhere((a) => a['slot_id'].toString() == slotId);
+      if (existingIndex >= 0 && attendance[existingIndex]['attendance_bool'] == true && isPresent == true) {
+        alreadyPresent = true;
+      }
+    }
+
+    if (alreadyPresent) {
+      print('DataService: Not queuing attendance, already marked present in local cache.');
+      return AttendanceUpdateResult(
+        success: true,
+        wasConflict: true,
+        message: 'Already marked present locally',
+      );
+    }
+
     if (_offlineService.isOnline) {
       try {
         print('DataService: Attempting to update attendance on server...');
         // Try to update immediately
         final result = await _updateAttendanceOnServerWithResult(attendeeId, slotId, isPresent);
-        
         print('DataService: Server update successful, updating local state...');
         // Update local state immediately
         _updateLocalAttendanceState(attendeeId, slotId, isPresent);
-        
         // Refresh this specific attendee from server to ensure consistency
         await _refreshAttendeeFromServer(attendeeId);
-        
         return result;
-        
       } catch (e) {
         print('Error updating attendance on server: $e');
         // Queue for later sync
@@ -614,13 +638,10 @@ class DataService {
           slotId: slotId,
           attendanceBool: isPresent,
         );
-        
         // Mark as dirty since we have unsent changes
         _markAttendeeDirty(attendeeId);
-        
         // Update local state optimistically
         _updateLocalAttendanceState(attendeeId, slotId, isPresent);
-        
         return AttendanceUpdateResult(
           success: true,
           wasConflict: false,
@@ -634,13 +655,10 @@ class DataService {
         slotId: slotId,
         attendanceBool: isPresent,
       );
-      
       // Mark as dirty since we have unsent changes
       _markAttendeeDirty(attendeeId);
-      
       // Update local state optimistically
       _updateLocalAttendanceState(attendeeId, slotId, isPresent);
-      
       return AttendanceUpdateResult(
         success: true,
         wasConflict: false,
@@ -667,7 +685,11 @@ class DataService {
 
     List<dynamic> attendance = [];
     if (currentData['attendee_attendance'] != null) {
-      attendance = json.decode(currentData['attendee_attendance']);
+      if (currentData['attendee_attendance'] is String) {
+        attendance = json.decode(currentData['attendee_attendance']);
+      } else if (currentData['attendee_attendance'] is List) {
+        attendance = List.from(currentData['attendee_attendance']);
+      }
     }
 
     print('DataService: Parsed attendance list - length: ${attendance.length}');
@@ -765,7 +787,7 @@ class DataService {
         });
       }
 
-      attendee['attendee_attendance'] = attendance;
+      attendee['attendee_attendance'] = json.encode(attendance);
       _attendees[attendeeIndex] = attendee;
 
       // Cache the updated data
@@ -931,7 +953,11 @@ class DataService {
 
     List<dynamic> attendance = [];
     if (currentData['attendee_attendance'] != null) {
-      attendance = json.decode(currentData['attendee_attendance']);
+      if (currentData['attendee_attendance'] is String) {
+        attendance = json.decode(currentData['attendee_attendance']);
+      } else if (currentData['attendee_attendance'] is List) {
+        attendance = List.from(currentData['attendee_attendance']);
+      }
     }
 
     // Update or add attendance for current slot with interim leave info
@@ -1010,7 +1036,7 @@ class DataService {
         attendance.add(attendanceRecord);
       }
 
-  attendee['attendee_attendance'] = attendance;
+  attendee['attendee_attendance'] = json.encode(attendance);
       _attendees[attendeeIndex] = attendee;
       
       // Notify listeners
@@ -1082,7 +1108,11 @@ class DataService {
 
     List<dynamic> attendance = [];
     if (currentData['attendee_attendance'] != null) {
-      attendance = json.decode(currentData['attendee_attendance']);
+      if (currentData['attendee_attendance'] is String) {
+        attendance = json.decode(currentData['attendee_attendance']);
+      } else if (currentData['attendee_attendance'] is List) {
+        attendance = List.from(currentData['attendee_attendance']);
+      }
     }
 
     // Find and update the attendance record for the current slot
@@ -1091,13 +1121,12 @@ class DataService {
     );
 
     if (existingIndex >= 0) {
-      attendance[existingIndex]['actual_return_time'] = DateTime.now().toIso8601String();
-      attendance[existingIndex]['interim_leave'] = false; // Mark as returned
-
+      // Only update slot presence, not interim leave
+      attendance[existingIndex]['attendance_bool'] = true;
       // Update in database
       await _supabase
           .from('attendee_details')
-          .update({'attendee_attendance': json.encode(attendance)})
+          .update({'attendee_attendance': attendance})
           .eq('attendee_internal_uid', attendeeId);
     }
   }
@@ -1126,13 +1155,10 @@ class DataService {
       );
 
       if (existingIndex >= 0) {
-        attendance[existingIndex]['actual_return_time'] = DateTime.now().toIso8601String();
-        attendance[existingIndex]['interim_leave'] = false; // Mark as returned
-
-    attendee['attendee_attendance'] = attendance;
+        // Only update slot presence, not interim leave
+        attendance[existingIndex]['attendance_bool'] = true;
+        attendee['attendee_attendance'] = json.encode(attendance);
         _attendees[attendeeIndex] = attendee;
-        
-        // Notify listeners
         _attendeesStream.add(_attendees);
       }
     }
@@ -1171,7 +1197,11 @@ class DataService {
 
     List<dynamic> attendance = [];
     if (currentData['attendee_attendance'] != null) {
-      attendance = json.decode(currentData['attendee_attendance']);
+      if (currentData['attendee_attendance'] is String) {
+        attendance = json.decode(currentData['attendee_attendance']);
+      } else if (currentData['attendee_attendance'] is List) {
+        attendance = List.from(currentData['attendee_attendance']);
+      }
     }
 
     // Find existing record for current slot
@@ -1233,7 +1263,7 @@ class DataService {
     // Update in database
     await _supabase
         .from('attendee_details')
-        .update({'attendee_attendance': json.encode(attendance)})
+        .update({'attendee_attendance': attendance})
         .eq('attendee_internal_uid', attendeeId);
         
     print('DataService: Database update completed successfully');
