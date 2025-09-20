@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'dart:convert';
 import '../../services/data_service.dart';
 
 class SearchProvider extends ChangeNotifier {
@@ -64,9 +65,62 @@ class SearchProvider extends ChangeNotifier {
     } else {
       _attendeeData = _originalData.where((attendee) {
         final name = attendee['attendee_name']?.toLowerCase() ?? '';
-        return name.contains(query.toLowerCase());
+        final uid = attendee['attendee_internal_uid']?.toLowerCase() ?? '';
+        final email = attendee['email']?.toLowerCase() ?? '';
+        final queryLower = query.toLowerCase();
+        
+        // Check name, UID, and email
+        if (name.contains(queryLower) || 
+            uid.contains(queryLower) || 
+            email.contains(queryLower)) {
+          return true;
+        }
+        
+        // Check properties
+        try {
+          if (attendee['attendee_properties'] != null) {
+            Map<String, dynamic> properties = {};
+            if (attendee['attendee_properties'] is String) {
+              properties = json.decode(attendee['attendee_properties']);
+            } else if (attendee['attendee_properties'] is Map) {
+              properties = Map<String, dynamic>.from(attendee['attendee_properties']);
+            }
+            
+            for (final entry in properties.entries) {
+              if (entry.key.toLowerCase().contains(queryLower) ||
+                  entry.value.toString().toLowerCase().contains(queryLower)) {
+                return true;
+              }
+            }
+          }
+        } catch (e) {
+          print('Error searching properties: $e');
+        }
+        
+        return false;
       }).toList();
     }
+    notifyListeners();
+  }
+
+  void filterByProperty(String propertyName, String propertyValue) {
+    _attendeeData = _originalData.where((attendee) {
+      try {
+        if (attendee['attendee_properties'] != null) {
+          Map<String, dynamic> properties = {};
+          if (attendee['attendee_properties'] is String) {
+            properties = json.decode(attendee['attendee_properties']);
+          } else if (attendee['attendee_properties'] is Map) {
+            properties = Map<String, dynamic>.from(attendee['attendee_properties']);
+          }
+          
+          return properties[propertyName]?.toString() == propertyValue;
+        }
+      } catch (e) {
+        print('Error filtering by property: $e');
+      }
+      return false;
+    }).toList();
     notifyListeners();
   }
 

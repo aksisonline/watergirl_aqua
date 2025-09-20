@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
+import 'dart:async';
 import 'property_editor.dart';
 
 class AttendeeProfilePage extends StatefulWidget {
@@ -19,11 +20,32 @@ class _AttendeeProfilePageState extends State<AttendeeProfilePage> {
   List<Map<String, dynamic>> slots = [];
   Map<String, dynamic> properties = {};
   bool _isLoading = false;
+  Timer? _timer;
+  DateTime? _interimLeaveStartTime;
+  Duration _timeOnLeave = Duration.zero;
+  bool _isOnInterimLeave = false;
 
   @override
   void initState() {
     super.initState();
     _loadData();
+    _startTimer();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_isOnInterimLeave && _interimLeaveStartTime != null) {
+        setState(() {
+          _timeOnLeave = DateTime.now().difference(_interimLeaveStartTime!);
+        });
+      }
+    });
   }
 
   Future<void> _loadData() async {
@@ -34,13 +56,22 @@ class _AttendeeProfilePageState extends State<AttendeeProfilePage> {
     try {
       // Load properties
       if (widget.attendee['attendee_properties'] != null) {
-        properties = json.decode(widget.attendee['attendee_properties']);
+        if (widget.attendee['attendee_properties'] is String) {
+          properties = json.decode(widget.attendee['attendee_properties']);
+        } else if (widget.attendee['attendee_properties'] is Map) {
+          properties = Map<String, dynamic>.from(widget.attendee['attendee_properties']);
+        }
       }
 
       // Load attendance history
       if (widget.attendee['attendee_attendance'] != null) {
-        final attendanceData = json.decode(widget.attendee['attendee_attendance']);
-        if (attendanceData is List) {
+        final attendanceData = widget.attendee['attendee_attendance'];
+        if (attendanceData is String) {
+          final decoded = json.decode(attendanceData);
+          if (decoded is List) {
+            attendanceHistory = List<Map<String, dynamic>>.from(decoded);
+          }
+        } else if (attendanceData is List) {
           attendanceHistory = List<Map<String, dynamic>>.from(attendanceData);
         }
       }
@@ -49,6 +80,9 @@ class _AttendeeProfilePageState extends State<AttendeeProfilePage> {
       final slotsData = await supabase.from('slots').select('*');
       slots = List<Map<String, dynamic>>.from(slotsData);
 
+      // Check interim leave status
+      _checkInterimLeaveStatus();
+
     } catch (e) {
       print('Error loading data: $e');
     }
@@ -56,6 +90,25 @@ class _AttendeeProfilePageState extends State<AttendeeProfilePage> {
     setState(() {
       _isLoading = false;
     });
+  }
+
+  void _checkInterimLeaveStatus() {
+    if (attendanceHistory.isEmpty) return;
+    
+    // Check the most recent attendance record
+    final lastRecord = attendanceHistory.last;
+    final interimLeave = lastRecord['interim_leave'];
+    
+    if (interimLeave == true) {
+      _isOnInterimLeave = true;
+      _interimLeaveStartTime = DateTime.tryParse(lastRecord['timestamp'] ?? '');
+    } else if (interimLeave is Map && interimLeave['is_on_leave'] == true) {
+      _isOnInterimLeave = true;
+      _interimLeaveStartTime = DateTime.tryParse(interimLeave['out_time'] ?? '');
+    } else {
+      _isOnInterimLeave = false;
+      _interimLeaveStartTime = null;
+    }
   }
 
   String _getSlotName(String slotId) {
@@ -120,6 +173,79 @@ class _AttendeeProfilePageState extends State<AttendeeProfilePage> {
                   ),
                   
                   const SizedBox(height: 16),
+
+                  // Interim Leave Status Card
+                  if (_isOnInterimLeave)
+                    Card(
+                      color: Colors.orange[100],
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.schedule, color: Colors.orange[800]),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Currently on Interim Leave',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.orange[800],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Text('Time away: '),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: _timeOnLeave.inMinutes > 10 ? Colors.red : Colors.orange,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    '${_timeOnLeave.inMinutes}:${(_timeOnLeave.inSeconds % 60).toString().padLeft(2, '0')}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_timeOnLeave.inMinutes > 10)
+                              Container(
+                                margin: const EdgeInsets.only(top: 8),
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.red[100],
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.red),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.warning, color: Colors.red, size: 16),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'Exceeded 10-minute limit',
+                                      style: TextStyle(
+                                        color: Colors.red,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  
+                  if (_isOnInterimLeave) const SizedBox(height: 16),
                   
                   // Properties Card
                   Card(
@@ -199,19 +325,67 @@ class _AttendeeProfilePageState extends State<AttendeeProfilePage> {
                               final slotId = attendance['slot_id'].toString();
                               final isPresent = attendance['attendance_bool'] == true;
                               final slotName = _getSlotName(slotId);
+                              final timestamp = attendance['timestamp'];
+                              final interimLeave = attendance['interim_leave'];
+                              final isOnInterimLeave = interimLeave == true || 
+                                                     (interimLeave is Map && interimLeave['is_on_leave'] == true);
                               
-                              return ListTile(
-                                leading: Icon(
-                                  isPresent ? Icons.check_circle : Icons.cancel,
-                                  color: isPresent ? Colors.green : Colors.red,
-                                ),
-                                title: Text(slotName),
-                                subtitle: Text('Slot ID: $slotId'),
-                                trailing: Text(
-                                  isPresent ? 'Present' : 'Absent',
-                                  style: TextStyle(
-                                    color: isPresent ? Colors.green : Colors.red,
-                                    fontWeight: FontWeight.bold,
+                              return Card(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                child: ListTile(
+                                  leading: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        isPresent ? Icons.check_circle : Icons.cancel,
+                                        color: isPresent ? Colors.green : Colors.red,
+                                      ),
+                                      if (isOnInterimLeave)
+                                        Container(
+                                          margin: const EdgeInsets.only(top: 2),
+                                          child: Icon(
+                                            Icons.schedule,
+                                            color: Colors.orange,
+                                            size: 16,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  title: Text(slotName),
+                                  subtitle: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text('Slot ID: $slotId'),
+                                      if (timestamp != null)
+                                        Text(
+                                          'Time: ${DateTime.tryParse(timestamp)?.toLocal().toString().substring(0, 19) ?? timestamp}',
+                                          style: const TextStyle(fontSize: 12),
+                                        ),
+                                      if (isOnInterimLeave)
+                                        Container(
+                                          margin: const EdgeInsets.only(top: 4),
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.orange,
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: const Text(
+                                            'Interim Leave',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  trailing: Text(
+                                    isPresent ? 'Present' : 'Absent',
+                                    style: TextStyle(
+                                      color: isPresent ? Colors.green : Colors.red,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ),
                               );

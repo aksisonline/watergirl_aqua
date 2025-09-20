@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'dart:convert';
 import 'attendee_list_provider.dart';
 import 'qr_register.dart';
 
@@ -79,26 +80,42 @@ class _AttendeeListViewState extends State<_AttendeeListView> {
                             Text('Properties: ${attendee['attendee_properties']}'),
                         ],
                       ),
-                      trailing: ElevatedButton(
-                        onPressed: uidExists
-                            ? null
-                            : () async {
-                                final attendeeWithId = Map<String, dynamic>.from(attendee);
-                                if (!attendeeWithId.containsKey('id')) {
-                                  // TODO: Optionally fetch id if needed
-                                }
-                                await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => QRRegisterPage(attendee: attendeeWithId),
-                                  ),
-                                );
-                                // Data will be updated automatically via stream
-                              },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: uidExists ? Colors.grey : Colors.blue,
-                        ),
-                        child: Text(uidExists ? 'QR Assigned' : 'Assign QR'),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ElevatedButton(
+                            onPressed: () async {
+                              final attendeeWithId = Map<String, dynamic>.from(attendee);
+                              if (!attendeeWithId.containsKey('id')) {
+                                // TODO: Optionally fetch id if needed
+                              }
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => QRRegisterPage(attendee: attendeeWithId),
+                                ),
+                              );
+                              // Data will be updated automatically via stream
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: uidExists ? Colors.orange : Colors.blue,
+                              minimumSize: const Size(80, 32),
+                            ),
+                            child: Text(
+                              uidExists ? 'Re-register' : 'Assign QR',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                          if (uidExists)
+                            Text(
+                              'QR Assigned',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.green[700],
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                        ],
                       ),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
                     );
