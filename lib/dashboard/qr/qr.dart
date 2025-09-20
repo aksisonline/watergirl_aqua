@@ -1389,6 +1389,64 @@ class QRScannerPageState extends State<QRScannerPage> {
                           ),
                         ),
 
+                      // Add interim leave button for profile mode
+                      if (qrMode == 'profile')
+                        ElevatedButton.icon(
+                          onPressed: () async {
+                            // Show interim leave options in profile mode
+                            final result = await showDialog<String>(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                title: const Text('Interim Leave'),
+                                content: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('Manage interim leave for ${attendeeData['attendee_name']}:'),
+                                    const SizedBox(height: 16),
+                                    const Text('• Mark as on interim leave'),
+                                    const Text('• Return from interim leave'),
+                                    const Text('• View interim leave history'),
+                                  ],
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(context),
+                                    child: const Text('Cancel'),
+                                  ),
+                                  ElevatedButton(
+                                    onPressed: () async {
+                                      Navigator.pop(context, 'start_leave');
+                                      if (currentSlot != null) {
+                                        await _handleInterimLeave();
+                                      } else {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                            content: Text('No active slot for interim leave'),
+                                            backgroundColor: Colors.orange,
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                                    child: const Text('Start Interim Leave', style: TextStyle(color: Colors.white)),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.schedule, size: 18),
+                          label: const Text('Interim Leave'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: isLargeScreen ? 24 : 16,
+                              vertical: isLargeScreen ? 16 : 12,
+                            ),
+                          ),
+                        ),
+
                       // Button to toggle interim leave options
                       if (qrMode == 'attendance' && currentSlot != null && !_showInterimLeaveOptions && !isSlotActive)
                         ElevatedButton.icon(

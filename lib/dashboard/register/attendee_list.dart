@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'dart:convert';
 import 'attendee_list_provider.dart';
 import 'qr_register.dart';
 
@@ -69,38 +70,115 @@ class _AttendeeListViewState extends State<_AttendeeListView> {
                   itemBuilder: (context, index) {
                     final attendee = attendees[index];
                     final uidExists = attendee['attendee_internal_uid'] != null;
-                    return ListTile(
-                      title: Text(attendee['attendee_name'] ?? 'Unknown Name'),
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: uidExists ? Colors.green : Colors.grey,
+                          child: Icon(
+                            uidExists ? Icons.qr_code : Icons.qr_code_scanner,
+                            color: Colors.white,
+                          ),
+                        ),
+                        title: Text(
+                          attendee['attendee_name'] ?? 'Unknown Name',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('ID: ${attendee['attendee_internal_uid'] ?? 'No ID'}'),
-                          if (attendee['attendee_properties'] != null)
-                            Text('Properties: ${attendee['attendee_properties']}'),
+                            if (attendee['attendee_properties'] != null) ...[
+                              const SizedBox(height: 4),
+                              Builder(
+                                builder: (context) {
+                                  // Parse properties for display
+                                  Map<String, dynamic> properties = {};
+                                  try {
+                                    if (attendee['attendee_properties'] is String) {
+                                      properties = json.decode(attendee['attendee_properties']);
+                                    } else if (attendee['attendee_properties'] is Map) {
+                                      properties = Map<String, dynamic>.from(attendee['attendee_properties']);
+                                    }
+                                  } catch (e) {
+                                    return const Text(
+                                      'Properties: Invalid format',
+                                      style: TextStyle(fontSize: 12, color: Colors.red),
+                                    );
+                                  }
+                                  
+                                  if (properties.isEmpty) {
+                                    return const Text(
+                                      'Properties: None set',
+                                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                                    );
+                                  }
+                                  
+                                  return Wrap(
+                                    spacing: 4,
+                                    runSpacing: 2,
+                                    children: properties.entries.take(3).map((entry) {
+                                      return Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue.withOpacity(0.1),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                                        ),
+                                        child: Text(
+                                          '${entry.key}: ${entry.value}',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.blue,
+                                          ),
+                                        ),
+                                      );
+                                    }).toList(),
+                                  );
+                                },
+                              ),
+                            ],
                         ],
                       ),
-                      trailing: ElevatedButton(
-                        onPressed: uidExists
-                            ? null
-                            : () async {
-                                final attendeeWithId = Map<String, dynamic>.from(attendee);
-                                if (!attendeeWithId.containsKey('id')) {
-                                  // TODO: Optionally fetch id if needed
-                                }
-                                await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => QRRegisterPage(attendee: attendeeWithId),
-                                  ),
-                                );
-                                // Data will be updated automatically via stream
-                              },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: uidExists ? Colors.grey : Colors.blue,
-                        ),
-                        child: Text(uidExists ? 'QR Assigned' : 'Assign QR'),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ElevatedButton(
+                            onPressed: () async {
+                              final attendeeWithId = Map<String, dynamic>.from(attendee);
+                              if (!attendeeWithId.containsKey('id')) {
+                                // TODO: Optionally fetch id if needed
+                              }
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => QRRegisterPage(attendee: attendeeWithId),
+                                ),
+                              );
+                              // Data will be updated automatically via stream
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: uidExists ? Colors.orange : Colors.blue,
+                              minimumSize: const Size(80, 32),
+                            ),
+                            child: Text(
+                              uidExists ? 'Re-register' : 'Assign QR',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                          if (uidExists)
+                            Text(
+                              'QR Assigned',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.green[700],
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                        ],
                       ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                      ),
                     );
                   },
                 ),
